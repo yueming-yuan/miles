@@ -20,8 +20,8 @@ from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
-from sglang.srt.debug_utils.dumper import dumper
 
+from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 
 from ..training_utils.ci_utils import check_grad_norm, check_kl
@@ -30,7 +30,12 @@ from ..training_utils.log_utils import aggregate_forward_results, aggregate_trai
 from ..training_utils.loss import loss_function
 from ..training_utils.parallel import ParallelState
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
-from .ci_utils import check_model_hashes, compute_model_hashes_by_layer, save_model_hashes
+from .ci_utils import (
+    check_model_hashes,
+    check_peak_gpu_memory_after_load,
+    compute_model_hashes_by_layer,
+    save_model_hashes,
+)
 from .initialize import is_megatron_main_rank
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
@@ -120,11 +125,6 @@ def setup_model_and_optimizer(
     else:
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
 
-    if dumper.may_enable:
-        dumper.apply_source_patches()
-        for chunk in model:
-            dumper.register_non_intrusive_dumper(chunk)
-
     # Optimizer
     kwargs = {}
     for f in dataclasses.fields(OptimizerConfig):
@@ -206,12 +206,15 @@ def forward_only(
         Aggregated outputs keyed by ``store_prefix + key``.
     """
 
+    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_ONLY)
+
     # reset data iterator
     for iterator in data_iterator:
         iterator.reset()
 
     config = get_model_config(model[0])
 
+    @dumper_phase_util.wrap_forward_step
     def forward_step(
         data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False
     ) -> tuple[torch.Tensor, Callable[[torch.Tensor], dict[str, list[torch.Tensor]]]]:
@@ -298,12 +301,12 @@ def forward_only(
             forward_only=True,
             collect_non_loss_data=True,
         )
-        if dumper.may_enable:
-            dumper.step()
 
     # Move model back to the train mode.
     for model_module in model:
         model_module.train()
+
+    dumper_phase_util.finalize(model)
 
     rollout_data = {}
     # Store the results on the last stage
@@ -344,6 +347,7 @@ def train_one_step(
         Reduced loss dictionary (last stage only) and gradient norm for logging.
     """
     args = get_args()
+    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD)
 
     # Set grad to zero.
     for model_chunk in model:
@@ -356,6 +360,7 @@ def train_one_step(
         custom_before_train_step_hook = load_function(args.custom_megatron_before_train_step_hook_path)
         custom_before_train_step_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler)
 
+    @dumper_phase_util.wrap_forward_step
     def forward_step(data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False) -> tuple[
         torch.Tensor,
         Callable[[torch.Tensor], tuple[torch.Tensor, int, dict[str, torch.Tensor | list[str]]]],
@@ -395,8 +400,6 @@ def train_one_step(
             args.qkv_format,
             allgather_cp=args.allgather_cp,
         )
-        batch["debug_rollout_id"] = rollout_id
-        batch["debug_step_id"] = step_id
 
         from miles.utils.replay_base import all_replay_managers
 
@@ -451,8 +454,6 @@ def train_one_step(
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False,
     )
-    if dumper.may_enable:
-        dumper.step()
 
     valid_step = True
     if not getattr(args, "check_for_nan_in_loss_and_grad", True):
@@ -486,6 +487,8 @@ def train_one_step(
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
+
+    dumper_phase_util.finalize(model)
 
     if mpu.is_pipeline_last_stage(ignore_virtual=True):
         loss_reduced = aggregate_train_losses(losses_reduced, parallel_state)
@@ -809,6 +812,7 @@ def initialize_model_and_optimizer(
         checkpointing_context={},
         skip_load_to_model_and_opt=False,
     )
+    check_peak_gpu_memory_after_load(args)
     clear_memory()
 
     check_model_hashes(args, model, iteration)

@@ -72,7 +72,7 @@ def main() -> int:
     parser.add_argument(
         "--tito-allowed-append-roles",
         nargs="+",
-        default=["tool", "user", "system"],
+        default=["tool"],
         choices=["tool", "user", "system"],
         metavar="ROLE",
         help=(
@@ -84,7 +84,7 @@ def main() -> int:
     parser.add_argument(
         "--thinking",
         choices=["off", "on", "both"],
-        default="off",
+        default="on",
         help=(
             "Thinking-mode filter.  off: non-thinking trajectories only.  "
             "on: thinking trajectories with enable_thinking=True.  "

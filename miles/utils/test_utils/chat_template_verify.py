@@ -148,6 +148,8 @@ from miles.utils.test_utils.mock_trajectories import (  # noqa: E402
     LongChainThinkingTrajectory,
     LongChainTrajectory,
     MultiToolSingleTurnTrajectory,
+    MultiTurnNoToolThinkingTrajectory,
+    MultiTurnNoToolTrajectory,
     MultiTurnThinkingTrajectory,
     MultiTurnTrajectory,
     MultiUserToolChainTrajectory,
@@ -166,8 +168,10 @@ def _short_name(cls: type) -> str:
 
 
 # Trajectories exercised by ``run_all_checks`` / the CLI.  Must be a subset of
-# the classes defined in mock_trajectories.py; currently excludes
-# MultiTurnNoTool{,Thinking} because of a known qwen3.5 template limitation.
+# the classes defined in mock_trajectories.py.  Callers (CLI, tests) pick
+# the applicable subset via ``filter_cases`` / ``expand_runs`` based on
+# each template's supported append roles and thinking mode; there is no
+# global "exclude" list here.
 _TRAJECTORIES: list[type] = [
     SingleToolTrajectory,
     MultiTurnTrajectory,
@@ -178,11 +182,13 @@ _TRAJECTORIES: list[type] = [
     RetrySystemTrajectory,
     IntermediateSystemTrajectory,
     SimpleNoToolTrajectory,
+    MultiTurnNoToolTrajectory,
     SingleToolThinkingTrajectory,
     MultiTurnThinkingTrajectory,
     LongChainThinkingTrajectory,
     MultiUserTurnThinkingTrajectory,
     IntermediateSystemThinkingTrajectory,
+    MultiTurnNoToolThinkingTrajectory,
 ]
 
 
@@ -251,6 +257,39 @@ def filter_cases(
             continue
         out.append(c)
     return out
+
+
+def expand_runs(
+    *,
+    supports_thinking: bool,
+    allowed_append_roles: frozenset[str] | None = None,
+    extra_template_kwargs: dict | None = None,
+):
+    """Yield ``(case, template_kwargs)`` pairs consistent with a template's
+    capability, for use by pytest parametrize in template / alignment tests.
+
+    * ``supports_thinking``: False filters out thinking cases and yields no
+      ``enable_thinking`` kwarg.  True yields both ``enable_thinking=True``
+      and ``enable_thinking=False`` for every selected case (thinking or
+      not), so the template's thinking branch is exercised against
+      non-reasoning input too.
+    * ``allowed_append_roles``: ``None`` means all roles; otherwise cases
+      whose ``append_roles`` is not a subset are skipped.  ``tool`` is
+      unioned in implicitly (matches :func:`filter_cases`).
+    * ``extra_template_kwargs``: merged into every yielded kwargs dict —
+      used to thread template-specific kwargs like GLM's
+      ``clear_thinking=False``.
+    """
+    thinking = "both" if supports_thinking else "off"
+    roles = allowed_append_roles if allowed_append_roles is not None else frozenset({"tool", "user", "system"})
+    extra = extra_template_kwargs or {}
+    selected = filter_cases(ALL_CASES, allowed_append_roles=roles, thinking=thinking)
+    for c in selected:
+        if supports_thinking:
+            for enable in (True, False):
+                yield c, {"enable_thinking": enable, **extra}
+        else:
+            yield c, dict(extra)
 
 
 @dataclass

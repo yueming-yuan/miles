@@ -1,0 +1,14 @@
+# Compute train/inference mismatch metrics without enabling TIS/RS loss correction.
+use_tis: false
+use_rs: false
+
+# `compute_mis_weights` reads these attributes before its metrics-only early return.
+tis_level: "token"
+rs_level: "geometric"
+tis_mode: "truncate"
+tis_lower_bound: 0.5
+tis_upper_bound: 1.5
+rs_lower_bound: 0.99
+rs_upper_bound: 1.001
+rs_veto_threshold: 1.0e-4
+tis_batch_normalize: false

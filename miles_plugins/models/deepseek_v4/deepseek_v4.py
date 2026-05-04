@@ -228,25 +228,25 @@ class DeepSeekV4Attention(MegatronModule):
         rd = self.rope_head_dim
 
         q_after_wq_a = self.wq_a(x)[0]
-        dumper.dump("wq_a_out", q_after_wq_a, layer_id=self.layer_id)
+        dumper.dump("wq_a_out", q_after_wq_a)
         qr = q = self.q_norm(q_after_wq_a)
-        dumper.dump("q_lora_after_norm", q, layer_id=self.layer_id)
+        dumper.dump("q_lora_after_norm", q)
         q_after_wq_b = self.wq_b(q)[0]
-        dumper.dump("wq_b_out", q_after_wq_b, layer_id=self.layer_id)
+        dumper.dump("wq_b_out", q_after_wq_b)
         q = q_after_wq_b.unflatten(-1, (self.n_local_heads, self.head_dim))
         q = q * torch.rsqrt(q.square().mean(-1, keepdim=True) + self.eps)
         q = q.clone()
-        dumper.dump("q_heads_after_norm", q, layer_id=self.layer_id)
+        dumper.dump("q_heads_after_norm", q)
         apply_rotary_emb(q[..., -rd:], freqs_cis)
-        dumper.dump("attn_q", q, layer_id=self.layer_id)
+        dumper.dump("attn_q", q)
 
         kv_after_wkv = self.wkv(x)[0]
-        dumper.dump("wkv_out", kv_after_wkv, layer_id=self.layer_id)
+        dumper.dump("wkv_out", kv_after_wkv)
         kv_vanilla = self.kv_norm(kv_after_wkv)
         kv_vanilla = kv_vanilla.clone()
-        dumper.dump("kv_after_norm", kv_vanilla, layer_id=self.layer_id)
+        dumper.dump("kv_after_norm", kv_vanilla)
         apply_rotary_emb(kv_vanilla[..., -rd:], freqs_cis)
-        dumper.dump("attn_v", kv_vanilla, layer_id=self.layer_id)
+        dumper.dump("attn_v", kv_vanilla)
         if os.environ.get("MEGATRON_USE_KV_QAT", "0") == "1":
             kv_vanilla = fp8_simulate_qat(kv_vanilla, 64)
 
@@ -284,7 +284,7 @@ class DeepSeekV4Attention(MegatronModule):
             kv_compress_sbd = self.compressor(x_sbd)
             if kv_compress_sbd is not None:
                 kv_compress = einops.rearrange(kv_compress_sbd, "s b d -> b s d")
-                dumper.dump("compressor_out", kv_compress, layer_id=self.layer_id, compress_ratio=self.compress_ratio)
+                dumper.dump("compressor_out", kv_compress, compress_ratio=self.compress_ratio)
 
         assert self.attn_sink.dtype == torch.float32
 
@@ -301,9 +301,9 @@ class DeepSeekV4Attention(MegatronModule):
 
         kv = copy_to_tensor_model_parallel_region(kv, group=self.tp_group, all_reduce_grad_fp32=True)
 
-        dumper.dump("attn_q_in", q, layer_id=self.layer_id, compress_ratio=self.compress_ratio)
-        dumper.dump("attn_kv_in", kv, layer_id=self.layer_id, compress_ratio=self.compress_ratio)
-        dumper.dump("attn_topk_idxs", topk_idxs, layer_id=self.layer_id, compress_ratio=self.compress_ratio)
+        dumper.dump("attn_q_in", q, compress_ratio=self.compress_ratio)
+        dumper.dump("attn_kv_in", kv, compress_ratio=self.compress_ratio)
+        dumper.dump("attn_topk_idxs", topk_idxs, compress_ratio=self.compress_ratio)
         attn_impl = os.environ.get("MEGATRON_SPARSE_ATTN_IMPL", "tilelang")
         if attn_impl == "tilelang":
             o = sparse_attn_tilelang(q, kv, self.attn_sink, topk_idxs, self.softmax_scale)
@@ -311,16 +311,16 @@ class DeepSeekV4Attention(MegatronModule):
             o = sparse_attn_torch(q, kv, self.attn_sink, topk_idxs, self.softmax_scale)
         else:
             o = dense_attn_torch(q, kv, self.attn_sink, topk_idxs, self.softmax_scale)
-        dumper.dump("attn_output", o, layer_id=self.layer_id, compress_ratio=self.compress_ratio)
+        dumper.dump("attn_output", o, compress_ratio=self.compress_ratio)
 
         apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)
 
         o = o.view(bsz, seqlen_local, self.n_local_groups, -1)
         wo_a = self.wo_a.weight.view(self.n_local_groups, self.o_lora_rank, -1)
         o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
-        dumper.dump("mqa_wo_a_out", o, layer_id=self.layer_id)
+        dumper.dump("mqa_wo_a_out", o)
         x, _ = self.wo_b(o.flatten(2))
-        dumper.dump("mqa_wo_b_out", x, layer_id=self.layer_id)
+        dumper.dump("mqa_wo_b_out", x)
 
         output = einops.rearrange(x, "b s d -> s b d")
 

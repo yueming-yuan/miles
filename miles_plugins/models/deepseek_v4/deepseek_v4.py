@@ -238,7 +238,7 @@ class DeepSeekV4Attention(MegatronModule):
         q = q.clone()
         dumper.dump("q_heads_after_norm", q, layer_id=self.layer_id)
         apply_rotary_emb(q[..., -rd:], freqs_cis)
-        dumper.dump("q_after_rope", q, layer_id=self.layer_id)
+        dumper.dump("attn_q", q, layer_id=self.layer_id)
 
         kv_after_wkv = self.wkv(x)[0]
         dumper.dump("wkv_out", kv_after_wkv, layer_id=self.layer_id)
@@ -246,7 +246,7 @@ class DeepSeekV4Attention(MegatronModule):
         kv_vanilla = kv_vanilla.clone()
         dumper.dump("kv_after_norm", kv_vanilla, layer_id=self.layer_id)
         apply_rotary_emb(kv_vanilla[..., -rd:], freqs_cis)
-        dumper.dump("kv_after_rope", kv_vanilla, layer_id=self.layer_id)
+        dumper.dump("attn_v", kv_vanilla, layer_id=self.layer_id)
         if os.environ.get("MEGATRON_USE_KV_QAT", "0") == "1":
             kv_vanilla = fp8_simulate_qat(kv_vanilla, 64)
 
@@ -311,7 +311,7 @@ class DeepSeekV4Attention(MegatronModule):
             o = sparse_attn_torch(q, kv, self.attn_sink, topk_idxs, self.softmax_scale)
         else:
             o = dense_attn_torch(q, kv, self.attn_sink, topk_idxs, self.softmax_scale)
-        dumper.dump("mqa_attn_out", o, layer_id=self.layer_id, compress_ratio=self.compress_ratio)
+        dumper.dump("attn_output", o, layer_id=self.layer_id, compress_ratio=self.compress_ratio)
 
         apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)
 

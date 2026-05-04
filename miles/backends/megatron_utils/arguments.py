@@ -1,7 +1,7 @@
 import logging
 import os
 
-from megatron.core.tokenizers.utils.build_tokenizer import vocab_size_with_padding as _vocab_size_with_padding
+from megatron.training.tokenizer.tokenizer import _vocab_size_with_padding
 from megatron.training.arguments import parse_args, validate_args
 
 __all__ = ["validate_args", "parse_args", "set_default_megatron_args"]

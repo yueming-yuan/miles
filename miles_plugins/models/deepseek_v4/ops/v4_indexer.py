@@ -7,6 +7,7 @@ from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
+from sglang.srt.debug_utils.dumper import dumper
 
 from .cp_utils import all_gather_cp
 from .utils import rotate_activation
@@ -100,6 +101,7 @@ class V4Indexer(MegatronModule):
         seqlen, bsz, _ = x.size()
 
         q, _ = self.linear_wq_b(qr)
+        dumper.dump("indexer_compute_q_out", q)
         q = q.reshape(seqlen, bsz, self.index_n_heads, self.index_head_dim)
 
         rd = self.rope_head_dim
@@ -114,12 +116,16 @@ class V4Indexer(MegatronModule):
         q = rotate_activation(q)
         if os.environ.get("MEGATRON_USE_KV_QAT", "0") == "1":
             q = fp8_simulate_qat(q, block_size=128)
+        dumper.dump("indexer_q_fp8", q)
 
         k = self.compressor(x)
+        dumper.dump("indexer_kv_cache_view", k)
 
         weights, _ = self.linear_weights_proj(x)
+        dumper.dump("indexer_compute_weights_raw", weights)
         softmax_scale = self.index_head_dim**-0.5
         weights = weights * (self.index_n_heads**-0.5) * softmax_scale
+        dumper.dump("indexer_weights", weights)
 
         if cp_size > 1 and cp_group is not None:
             k = all_gather_cp(k, dim=0, cp_group=cp_group)
@@ -133,6 +139,7 @@ class V4Indexer(MegatronModule):
             cu_ks = cu_ks[cp_rank * seqlen : (cp_rank + 1) * seqlen]
             cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
+        dumper.dump("indexer_logits", index_scores)
 
         topk_k = min(self.index_topk, index_scores.size(-1))
         topk_indices = index_scores.topk(topk_k, dim=-1)[1]

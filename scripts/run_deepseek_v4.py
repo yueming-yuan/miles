@@ -83,6 +83,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     dump_details: bool = True
     debug_train_run_id: str | None = None
     debug_train_rollout_id: str | None = None
+    debug_data_root: str = "/root/shared_data"
     train_partial_deterministic: bool = True
     fp8_training: bool = False
     enable_mis: bool = False
@@ -99,7 +100,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
         #       --model-name DeepSeek-V4-Pro-FP8 --num-nodes 32 --num-gpus-per-node 8
         if self.model_name in _PRO_MODEL_NAMES:
             self.optimizer_offload = True
-            self.enable_r3 = False
 
     @property
     def megatron_model_type(self):
@@ -526,7 +526,7 @@ def _train(args: ScriptArgs):
     )
 
     if args.dump_details:
-        misc_args += f"--dump-details /root/shared_data/{args.run_id}/dump_details "
+        misc_args += f"--dump-details {args.debug_data_root}/{args.run_id}/dump_details "
 
     if args.enable_mis:
         misc_args += (
@@ -541,8 +541,10 @@ def _train(args: ScriptArgs):
     if args.debug_train_run_id is not None:
         if args.debug_train_rollout_id is None:
             args.debug_train_rollout_id = 1
-        misc_args += f"--load-debug-rollout-data \
-            /root/shared_data/{args.debug_train_run_id}/dump_details/rollout_data/{args.debug_train_rollout_id}.pt "
+        misc_args += (
+            f"--load-debug-rollout-data "
+            f"{args.debug_data_root}/{args.debug_train_run_id}/dump_details/rollout_data/{args.debug_train_rollout_id}.pt "
+        )
         misc_args += "--debug-train-only "
 
     if args.enable_r3:

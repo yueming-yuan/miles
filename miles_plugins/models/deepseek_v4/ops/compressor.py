@@ -4,6 +4,7 @@ import einops
 import torch
 import torch.nn as nn
 from megatron.core.transformer.transformer_config import TransformerConfig
+from sglang.srt.debug_utils.dumper import dumper
 from torch.nn import Linear
 
 from .cp_utils import all_gather_cp, get_freqs_cis_for_cp
@@ -141,6 +142,7 @@ class DeepSeekV4Compressor(nn.Module):
         x_fp32 = x.float()
         kv = self.wkv(x_fp32)
         score = self.wgate(x_fp32)
+        dumper.dump("compressor_kv_score", torch.cat([kv, score], dim=-1), compress_ratio=ratio)
 
         kv = kv.unflatten(1, (-1, ratio))
         score = score.unflatten(1, (-1, ratio)) + self.ape
@@ -151,12 +153,14 @@ class DeepSeekV4Compressor(nn.Module):
 
         score_softmax = score.softmax(dim=2)
         kv = (kv * score_softmax).sum(dim=2)
+        dumper.dump("compress_forward_out", kv, compress_ratio=ratio)
 
         kv = self.norm(kv.to(dtype))
 
         freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen_local, self.cp_size, self.cp_group, stride=ratio)
 
         apply_rotary_emb(kv[..., -self.rope_head_dim :], freqs_cis)
+        dumper.dump("compress_fused_norm_rope_out", kv, compress_ratio=ratio)
 
         if self.rotate:
             kv = rotate_activation(kv)
@@ -168,6 +172,7 @@ class DeepSeekV4Compressor(nn.Module):
                 kv[..., : self.nope_head_dim] = fp8_simulate_qat(kv[..., : self.nope_head_dim], 64)
             else:
                 pass
+        dumper.dump("compress_final_out", kv, compress_ratio=ratio)
 
         return kv
 

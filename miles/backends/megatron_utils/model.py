@@ -20,6 +20,7 @@ from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.utils import get_model_config
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
+from sglang.srt.debug_utils.dumper import dumper
 
 from miles.utils.memory_utils import clear_memory
 
@@ -118,6 +119,11 @@ def setup_model_and_optimizer(
         model = _setup_lora_model_via_bridge(args)
     else:
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
+
+    if dumper.may_enable:
+        dumper.apply_source_patches()
+        for chunk in model:
+            dumper.register_non_intrusive_dumper(chunk)
 
     # Optimizer
     kwargs = {}
@@ -292,6 +298,8 @@ def forward_only(
             forward_only=True,
             collect_non_loss_data=True,
         )
+        if dumper.may_enable:
+            dumper.step()
 
     # Move model back to the train mode.
     for model_module in model:
@@ -443,6 +451,8 @@ def train_one_step(
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False,
     )
+    if dumper.may_enable:
+        dumper.step()
 
     valid_step = True
     if not getattr(args, "check_for_nan_in_loss_and_grad", True):

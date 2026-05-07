@@ -43,6 +43,7 @@ class _RolloutSample:
 class _RolloutData:
     samples: list[_RolloutSample]
     routed_experts: list | None  # list of np arrays, shape [seq_len, num_layers, topk] per sample
+    indexer_topk: list | None  # list of np arrays, shape [seq_len, num_c4_layers, topk] per sample
 
 
 def _load_rollout_data(rollout_path: Path) -> _RolloutData:
@@ -59,7 +60,9 @@ def _load_rollout_data(rollout_path: Path) -> _RolloutData:
 
     results = []
     routed_experts_list = []
+    indexer_topk_list = []
     has_routing = False
+    has_indexer = False
     for i, sample in enumerate(samples):
         if sample.get("rollout_log_probs") is None:
             continue
@@ -79,11 +82,21 @@ def _load_rollout_data(rollout_path: Path) -> _RolloutData:
         if re is not None:
             has_routing = True
         routed_experts_list.append(re)
+        ix = sample.get("rollout_indexer_topk")
+        if ix is not None:
+            has_indexer = True
+        indexer_topk_list.append(ix)
 
-    print(f"[cli] Loaded {len(results)}/{len(samples)} samples (routing_replay={'yes' if has_routing else 'no'})", flush=True)
+    print(
+        f"[cli] Loaded {len(results)}/{len(samples)} samples "
+        f"(routing_replay={'yes' if has_routing else 'no'}, "
+        f"indexer_replay={'yes' if has_indexer else 'no'})",
+        flush=True,
+    )
     return _RolloutData(
         samples=results,
         routed_experts=routed_experts_list if has_routing else None,
+        indexer_topk=indexer_topk_list if has_indexer else None,
     )
 
 
@@ -92,7 +105,7 @@ def _pad_to_same_length(all_token_ids: list[list[int]], pad_multiple: int = 128)
     max_len = max(len(t) for t in all_token_ids)
     if max_len % pad_multiple != 0:
         max_len = max_len + pad_multiple - (max_len % pad_multiple)
-    return [t + [0] * (max_len - len(t)) for t in all_token_ids]
+    return [t + [t[-1]] * (max_len - len(t)) for t in all_token_ids]
 
 
 def _save_sglang_logprobs_as_baseline(
@@ -104,6 +117,11 @@ def _save_sglang_logprobs_as_baseline(
 
     Each sample becomes a separate batch entry. SGLang logprobs are for response tokens
     only. Megatron logprobs are next-token predictions at each position.
+
+    NOTE: this writes the historical rollout-time decode logprobs as baseline. For a
+    cleaner cross-stack comparison against fresh sg-prefill, use the standalone
+    `tools_debug/compare_logprobs_from_dumps.py` instead — it pulls sg's lm_head_logits
+    dump directly and applies log_softmax locally, avoiding any rollout-vs-debug drift.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -135,56 +153,56 @@ def _save_sglang_logprobs_as_baseline(
     print(f"[cli] SGLang logprobs saved: {len(all_entries)} samples, {total_positions} total positions", flush=True)
 
 
-def _save_routing_replay_from_rollout(
-    routed_experts: list,
+def _save_replay_from_rollout(
+    rollout_field: list,
     padded_seq_length: int,
     output_dir: Path,
+    manager,
 ) -> Path:
-    """Convert rollout routed_experts to run_megatron replay file format.
+    """Convert a rollout per-sample routing field to run_megatron replay file format.
 
-    Rollout format: per-sample np array [seq_len, num_layers, topk]
-    Replay format: list[list[Tensor]] — outer=per MoE layer, inner=per sequence,
-                   each tensor [seq_len, topk]
+    Rollout format: per-sample np array ``[seq_len, num_replay_layers, topk]``
+    Replay format:  ``list[list[Tensor]]`` — outer=per replay layer, inner=per sequence,
+                    each tensor ``[seq_len, topk]``
 
-    For run_megatron, ALL layers are assumed MoE (moe_layer_freq=1).
+    Used for both MoE routing (rollout_routed_experts) and sparse-MLA indexer topk
+    (rollout_indexer_topk). The number of "replay layers" is implied by the rollout's
+    layer dim and must match what the model registers as replays at construction time.
     """
     import numpy as np
     import torch
 
-    # Get num_layers from first valid sample
-    first_valid = next(re for re in routed_experts if re is not None)
+    first_valid = next(x for x in rollout_field if x is not None)
     num_layers = first_valid.shape[1]
     topk = first_valid.shape[2]
 
-    # Build per-layer replay: list[list[Tensor]]
-    # Outer: num_layers, Inner: num_samples, each [padded_seq_len, topk]
     per_layer: list[list[torch.Tensor]] = [[] for _ in range(num_layers)]
 
-    for re in routed_experts:
-        if re is None:
-            # Pad with -1 (no routing)
+    for entry in rollout_field:
+        if entry is None:
             for layer_idx in range(num_layers):
                 per_layer[layer_idx].append(
                     torch.full((padded_seq_length, topk), -1, dtype=torch.int32)
                 )
             continue
 
-        seq_len = re.shape[0]  # original seq_len (before padding)
-        re_tensor = torch.from_numpy(np.asarray(re)).to(torch.int32)
+        seq_len = entry.shape[0]
+        entry_tensor = torch.from_numpy(np.asarray(entry)).to(torch.int32)
 
         for layer_idx in range(num_layers):
-            layer_data = re_tensor[:, layer_idx, :]  # [seq_len, topk]
-            # Pad to padded_seq_length
+            layer_data = entry_tensor[:, layer_idx, :]  # [seq_len, topk]
             if seq_len < padded_seq_length:
                 pad = torch.full((padded_seq_length - seq_len, topk), -1, dtype=torch.int32)
                 layer_data = torch.cat([layer_data, pad], dim=0)
             per_layer[layer_idx].append(layer_data)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    from miles.utils.replay_base import routing_replay_manager
-    save_path = output_dir / f"rank0_{routing_replay_manager.filename}"
+    save_path = output_dir / f"rank0_{manager.filename}"
     torch.save(per_layer, save_path)
-    print(f"[cli] Routing replay saved: {num_layers} layers, {len(routed_experts)} sequences → {save_path}", flush=True)
+    print(
+        f"[cli] {manager.name} replay saved: {num_layers} layers, {len(rollout_field)} sequences → {save_path}",
+        flush=True,
+    )
     return output_dir
 
 
@@ -194,6 +212,8 @@ def run_impl(args: RunArgs) -> None:
 
     if args.routing_replay_dump_path is not None and parallel.nproc != 1:
         raise ValueError(f"Routing replay dump requires single-rank run (nproc=1), got {parallel}")
+    if args.indexer_replay_dump_path is not None and parallel.nproc != 1:
+        raise ValueError(f"Indexer replay dump requires single-rank run (nproc=1), got {parallel}")
 
     resolved_megatron: Path = resolve_megatron_path(args.megatron_path)
 
@@ -220,12 +240,22 @@ def run_impl(args: RunArgs) -> None:
         if args.logprob_output is None:
             args.logprob_output = args.output_dir / "megatron_logprobs"
 
-        # Convert routing replay data from rollout format
+        # Convert routing/indexer replay data from rollout format
+        from miles.utils.replay_base import indexer_replay_manager, routing_replay_manager
         if rollout_data.routed_experts is not None and args.routing_replay_load_path is None:
-            replay_dir = _save_routing_replay_from_rollout(
-                rollout_data.routed_experts, seq_length, args.output_dir / "routing_replay"
+            args.routing_replay_load_path = _save_replay_from_rollout(
+                rollout_data.routed_experts,
+                seq_length,
+                args.output_dir / "routing_replay",
+                routing_replay_manager,
             )
-            args.routing_replay_load_path = replay_dir
+        if rollout_data.indexer_topk is not None and args.indexer_replay_load_path is None:
+            args.indexer_replay_load_path = _save_replay_from_rollout(
+                rollout_data.indexer_topk,
+                seq_length,
+                args.output_dir / "indexer_replay",
+                indexer_replay_manager,
+            )
     else:
         prompt: PromptConfig = PromptConfig(
             mode=args.prompt_mode,  # type: ignore[arg-type]
@@ -247,6 +277,8 @@ def run_impl(args: RunArgs) -> None:
         source_patcher_config=args.source_patcher_config,
         routing_replay_dump_path=args.routing_replay_dump_path,
         routing_replay_load_path=args.routing_replay_load_path,
+        indexer_replay_dump_path=args.indexer_replay_dump_path,
+        indexer_replay_load_path=args.indexer_replay_load_path,
         top_k=args.top_k,
         logprob_output=args.logprob_output,
         allgather_cp=args.allgather_cp,

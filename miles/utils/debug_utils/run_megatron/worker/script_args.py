@@ -23,6 +23,8 @@ class WorkerScriptArgs:
     source_patcher_config: Path | None = None
     routing_replay_dump_path: Path | None = None
     routing_replay_load_path: Path | None = None
+    indexer_replay_dump_path: Path | None = None
+    indexer_replay_load_path: Path | None = None
     top_k: int = 0
     logprob_output: Path | None = None
     allgather_cp: bool = False

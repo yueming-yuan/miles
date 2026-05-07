@@ -46,6 +46,8 @@ class RunArgs(CommonRunArgs):
     etp: int = _field(default=1, help="Expert tensor parallel size")
     routing_replay_dump_path: Path | None = _field(default=None, help="Routing replay dump path")
     routing_replay_load_path: Path | None = _field(default=None, help="Routing replay load path")
+    indexer_replay_dump_path: Path | None = _field(default=None, help="Indexer replay dump path")
+    indexer_replay_load_path: Path | None = _field(default=None, help="Indexer replay load path")
     logprob_output: Path | None = _field(default=None, help="Directory to save per-token logprob JSON files")
     rollout_data: Path | None = _field(
         default=None,

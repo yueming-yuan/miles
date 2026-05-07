@@ -48,6 +48,9 @@ def build_worker_args(
     use_routing_replay: bool = (
         script_args.routing_replay_dump_path is not None or script_args.routing_replay_load_path is not None
     )
+    use_indexer_replay: bool = (
+        script_args.indexer_replay_dump_path is not None or script_args.indexer_replay_load_path is not None
+    )
     parts: list[str] = [
         _build_megatron_flags(
             parallel=parallel,
@@ -55,6 +58,7 @@ def build_worker_args(
             seq_length=seq_length,
             batch_size=batch_size,
             use_routing_replay=use_routing_replay,
+            use_indexer_replay=use_indexer_replay,
         ),
         WORKER_SCRIPT_ARGS_BRIDGE.to_cli_args(script_args),
     ]
@@ -90,6 +94,7 @@ def _build_megatron_flags(
     seq_length: int,
     batch_size: int,
     use_routing_replay: bool,
+    use_indexer_replay: bool,
 ) -> str:
     """Build Megatron-native CLI flags from declarative tables."""
     key_value_args: list[tuple[str, object | None]] = [
@@ -108,6 +113,7 @@ def _build_megatron_flags(
         ("--bf16", True),
         ("--no-gradient-accumulation-fusion", True),
         ("--use-routing-replay", use_routing_replay),
+        ("--use-indexer-replay", use_indexer_replay),
     ]
 
     parts: list[str] = []

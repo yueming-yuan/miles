@@ -54,6 +54,16 @@ def main() -> None:
     setup_replay_before_model(script)
     model: list[Any] = _build_and_load_model(args, script)
 
+    if rank == 0:
+        for m in model:
+            for n, p in m.named_parameters():
+                if "tid2eid" in n:
+                    flat = p.detach().to(torch.int64).flatten()
+                    valid = (flat >= 0)
+                    print(f"[tid2eid probe] name={n} shape={tuple(p.shape)} dtype={p.dtype} valid_count={int(valid.sum())}/{flat.numel()} sample[0:5]={p.detach()[0:5].tolist()} unique_vals_first1k={torch.unique(flat[:1000]).tolist()[:20]}", flush=True)
+                    break
+            break
+
     for m in model:
         dumper.register_non_intrusive_dumper(m)
 
@@ -150,6 +160,7 @@ def main() -> None:
 def _register_extra_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser = WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser(parser)
     parser.add_argument("--use-routing-replay", action="store_true", default=False)
+    parser.add_argument("--use-indexer-replay", action="store_true", default=False)
     parser.add_argument("--use-miles-router", action="store_true", default=False)
     return parser
 
@@ -215,6 +226,8 @@ def _run_forward_backward(
     forward_backward_func: Callable[..., Any] = get_forward_backward_func()
     captured: list[torch.Tensor] = []
 
+    dumper.set_ctx(phase="EXTEND", graft_phase="prefill")
+
     def forward_step_func(
         data_iterator: Any,
         model_chunk: Any,
@@ -226,6 +239,7 @@ def _run_forward_backward(
             attention_mask=data.get("attention_mask"),
             runtime_gather_output=True,
         )
+        dumper.dump("lm_head_logits", output)
         captured.append(output.detach())
         return output, partial(loss_func, data["labels"])
 

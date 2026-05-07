@@ -1,4 +1,4 @@
-"""Routing replay stage management for standalone Megatron worker.
+"""Routing & indexer replay stage management for standalone Megatron worker.
 
 Only single-rank (nproc=1) baselines are supported: save always writes
 a rank-0 file, and load always reads that file with CP/SP slicing.
@@ -10,7 +10,11 @@ from typing import NamedTuple
 import torch
 
 from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
-from miles.utils.replay_base import routing_replay_manager
+from miles.utils.replay_base import (
+    BaseReplayManager,
+    indexer_replay_manager,
+    routing_replay_manager,
+)
 
 
 class _ParallelRanks(NamedTuple):
@@ -20,24 +24,36 @@ class _ParallelRanks(NamedTuple):
     tp_rank: int
 
 
+def _replay_specs(script: WorkerScriptArgs) -> list[tuple[BaseReplayManager, Path | None, Path | None]]:
+    """Per-manager (manager, dump_path, load_path) tuples."""
+    return [
+        (routing_replay_manager, script.routing_replay_dump_path, script.routing_replay_load_path),
+        (indexer_replay_manager, script.indexer_replay_dump_path, script.indexer_replay_load_path),
+    ]
+
+
 def setup_replay_before_model(script: WorkerScriptArgs) -> None:
-    """Enable replay manager and set stage BEFORE model construction.
+    """Enable replay managers and set their stage BEFORE model construction.
 
     Must be called before ``get_model()`` so that ``register_to_module``
     (called during model construction) sees ``enabled=True`` and creates
-    Replay objects on MoE modules.
+    Replay objects on the corresponding modules.
     """
-    if script.routing_replay_dump_path:
-        routing_replay_manager.enabled = True
-        routing_replay_manager.stage = "record"
-        print(f"[worker] Routing replay enabled, stage=record (dump → {script.routing_replay_dump_path})", flush=True)
-    elif script.routing_replay_load_path:
-        routing_replay_manager.enabled = True
-        routing_replay_manager.stage = "replay_forward"
-        print(
-            f"[worker] Routing replay enabled, stage=replay_forward (load ← {script.routing_replay_load_path})",
-            flush=True,
-        )
+    for manager, dump_path, load_path in _replay_specs(script):
+        if dump_path:
+            manager.enabled = True
+            manager.stage = "record"
+            print(
+                f"[worker] {manager.name} replay enabled, stage=record (dump → {dump_path})",
+                flush=True,
+            )
+        elif load_path:
+            manager.enabled = True
+            manager.stage = "replay_forward"
+            print(
+                f"[worker] {manager.name} replay enabled, stage=replay_forward (load ← {load_path})",
+                flush=True,
+            )
 
 
 def load_replay_data(
@@ -46,44 +62,41 @@ def load_replay_data(
     rank: int,
     sequence_parallel: bool = False,
 ) -> None:
-    """Load routing replay data from rank 0's file with CP/SP slicing."""
-    if not script.routing_replay_load_path:
-        return
-
-    load_dir: Path = script.routing_replay_load_path
-    replay_files: list[Path] = sorted(load_dir.glob(f"*_{routing_replay_manager.filename}"))
-    if len(replay_files) != 1:
-        raise ValueError(
-            f"Expected exactly 1 replay file in {load_dir}, "
-            f"found {len(replay_files)}: {[f.name for f in replay_files]}"
+    """Load replay data for every manager whose load path is set."""
+    for manager, _dump_path, load_path in _replay_specs(script):
+        if not load_path:
+            continue
+        replay_files: list[Path] = sorted(load_path.glob(f"*_{manager.filename}"))
+        if len(replay_files) != 1:
+            raise ValueError(
+                f"Expected exactly 1 {manager.name} replay file in {load_path}, "
+                f"found {len(replay_files)}: {[f.name for f in replay_files]}"
+            )
+        _load_replay(
+            manager,
+            replay_files[0],
+            rank=rank,
+            sequence_parallel=sequence_parallel,
+            allgather_cp=script.allgather_cp,
         )
-
-    replay_file: Path = replay_files[0]
-    _load_replay(replay_file, rank=rank, sequence_parallel=sequence_parallel, allgather_cp=script.allgather_cp)
 
 
 def save_replay_data(script: WorkerScriptArgs, *, rank: int) -> None:
-    """Save recorded routing replay data to disk (rank 0 only)."""
-    if not script.routing_replay_dump_path:
-        return
-    assert rank == 0
-
-    script.routing_replay_dump_path.mkdir(parents=True, exist_ok=True)
-
-    replays_data: list[list[torch.Tensor]] = [replay.top_indices_list for replay in routing_replay_manager.replays]
-    total_entries: int = sum(len(d) for d in replays_data)
-    assert total_entries > 0
-
-    save_path: Path = _replay_file_path(base_dir=script.routing_replay_dump_path)
-    torch.save(replays_data, save_path)
-    print(
-        f"[worker] Saved routing replay ({total_entries} entries, {len(replays_data)} replays) → {save_path}",
-        flush=True,
-    )
-
-
-def _replay_file_path(*, base_dir: Path) -> Path:
-    return base_dir / f"rank0_{routing_replay_manager.filename}"
+    """Save recorded replay data to disk (rank 0 only) for every dump path set."""
+    for manager, dump_path, _load_path in _replay_specs(script):
+        if not dump_path:
+            continue
+        assert rank == 0
+        dump_path.mkdir(parents=True, exist_ok=True)
+        replays_data: list[list[torch.Tensor]] = [replay.top_indices_list for replay in manager.replays]
+        total_entries: int = sum(len(d) for d in replays_data)
+        assert total_entries > 0
+        save_path: Path = dump_path / f"rank0_{manager.filename}"
+        torch.save(replays_data, save_path)
+        print(
+            f"[worker] Saved {manager.name} replay ({total_entries} entries, {len(replays_data)} replays) → {save_path}",
+            flush=True,
+        )
 
 
 def _get_parallel_ranks() -> _ParallelRanks:
@@ -100,25 +113,28 @@ def _get_parallel_ranks() -> _ParallelRanks:
 
 
 def _load_replay(
+    manager: BaseReplayManager,
     replay_file: Path,
     *,
     rank: int,
     sequence_parallel: bool,
     allgather_cp: bool = False,
 ) -> None:
-    """Load replay from rank 0's file with CP slicing and SP slicing."""
+    """Load replay from rank 0's file with CP/SP slicing."""
     saved_replays: list[list[torch.Tensor]] = torch.load(replay_file, weights_only=False)
 
-    expected: int = len(routing_replay_manager.replays)
+    expected: int = len(manager.replays)
     if len(saved_replays) != expected:
-        raise ValueError(f"Replay file has {len(saved_replays)} replays but model expects {expected}")
+        raise ValueError(
+            f"{manager.name} replay file has {len(saved_replays)} replays but model expects {expected}"
+        )
 
     ranks: _ParallelRanks = _get_parallel_ranks()
-    do_sp_slice: bool = sequence_parallel and routing_replay_manager.if_sp_region and ranks.tp_size > 1
+    do_sp_slice: bool = sequence_parallel and manager.if_sp_region and ranks.tp_size > 1
 
     total_entries: int = 0
     for replay_idx, (replay, indices_list) in enumerate(
-        zip(routing_replay_manager.replays, saved_replays, strict=True)
+        zip(manager.replays, saved_replays, strict=True)
     ):
         sliced: list[torch.Tensor] = indices_list
 
@@ -133,7 +149,10 @@ def _load_replay(
             else:
                 from miles.backends.training_utils.cp_utils import natural_to_zigzag_slice
 
-                sliced = [natural_to_zigzag_slice(t, dim=0, cp_size=ranks.cp_size, cp_rank=ranks.cp_rank) for t in sliced]
+                sliced = [
+                    natural_to_zigzag_slice(t, dim=0, cp_size=ranks.cp_size, cp_rank=ranks.cp_rank)
+                    for t in sliced
+                ]
 
         if do_sp_slice:
             sliced = [_sp_slice(t, tp_size=ranks.tp_size, tp_rank=ranks.tp_rank) for t in sliced]
@@ -147,14 +166,15 @@ def _load_replay(
             shapes_before: list[torch.Size] = [t.shape for t in indices_list]
             shapes_after: list[torch.Size] = [t.shape for t in sliced]
             print(
-                f"[worker] replay[{replay_idx}]: cp={ranks.cp_size}/{ranks.cp_rank}, tp={ranks.tp_size}/{ranks.tp_rank}, "
-                f"sp={sequence_parallel}, shapes {shapes_before} → {shapes_after}",
+                f"[worker] {manager.name} replay[{replay_idx}]: cp={ranks.cp_size}/{ranks.cp_rank}, "
+                f"tp={ranks.tp_size}/{ranks.tp_rank}, sp={sequence_parallel}, "
+                f"shapes {shapes_before} → {shapes_after}",
                 flush=True,
             )
 
     if rank == 0:
         print(
-            f"[worker] Loaded routing replay ({total_entries} entries, {expected} replays) ← {replay_file}",
+            f"[worker] Loaded {manager.name} replay ({total_entries} entries, {expected} replays) ← {replay_file}",
             flush=True,
         )
 

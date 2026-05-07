@@ -115,7 +115,7 @@ class V4Indexer(MegatronModule):
 
         q = rotate_activation(q)
         if os.environ.get("MEGATRON_USE_KV_QAT", "0") == "1":
-            q = fp8_simulate_qat(q, block_size=128)
+            q = fp8_simulate_qat(q, 128)
         dumper.dump("indexer_q_fp8", q)
 
         k = self.compressor(x)
@@ -141,16 +141,21 @@ class V4Indexer(MegatronModule):
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
         dumper.dump("indexer_logits", index_scores)
 
-        topk_k = min(self.index_topk, index_scores.size(-1))
-        topk_indices = index_scores.topk(topk_k, dim=-1)[1]
-
         from miles.utils.replay_base import indexer_replay_manager
 
         def _original_topk(scores, k, **kwargs):
             k = min(k, scores.size(-1))
             return scores.topk(k, dim=-1)[1]
 
+        # Replay buffer is keyed by per-token (shape [n_tokens, topk]) but index_scores
+        # comes out of the kernel as BSHD [B, S, KV]. Flatten the batch dim before the
+        # replay hook (which asserts top_indices.shape[0] == scores.shape[0]), then
+        # restore [B, S, topk] afterwards. Consistent with the routing manager, where
+        # MoE scores are already flat [n_tokens, n_experts].
+        B, S, KV = index_scores.shape
+        flat_scores = index_scores.reshape(B * S, KV)
         topk_fn = indexer_replay_manager.get_topk_fn(_original_topk, return_probs=False)
-        topk_indices = topk_fn(index_scores, self.index_topk)
+        flat_topk = topk_fn(flat_scores, self.index_topk)
+        topk_indices = flat_topk.reshape(B, S, -1)
 
         return topk_indices

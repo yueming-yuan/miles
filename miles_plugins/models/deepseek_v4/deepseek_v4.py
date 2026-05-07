@@ -44,6 +44,7 @@ from .ops.v4_indexer import V4Indexer
 # Default "2604" preserves existing behavior.
 _DSV4_CKPT_VERSION = os.environ.get("MILES_DSV4_CKPT_VERSION", "2604")
 _IS_0415 = _DSV4_CKPT_VERSION == "0415"
+_USE_0505_FIX = os.environ.get("MILES_DSV4_FIX_0505", "0") == "1"
 
 
 class DeepSeekV4Attention(MegatronModule):
@@ -176,7 +177,7 @@ class DeepSeekV4Attention(MegatronModule):
                 self.indexer = None
 
         rope_base = config.dsv4_compress_rope_theta if self.compress_ratio else config.rotary_base
-        yarn_disabled = _IS_0415 and not self.compress_ratio
+        yarn_disabled = (_IS_0415 or _USE_0505_FIX) and not self.compress_ratio
         freqs_cis = wrapped_precompute_freqs_cis(
             config, rope_head_dim=self.rope_head_dim, base=rope_base, yarn_disabled=yarn_disabled
         )
@@ -234,7 +235,11 @@ class DeepSeekV4Attention(MegatronModule):
         q_after_wq_b = self.wq_b(q)[0]
         dumper.dump("wq_b_out", q_after_wq_b)
         q = q_after_wq_b.unflatten(-1, (self.n_local_heads, self.head_dim))
-        q = q * torch.rsqrt(q.square().mean(-1, keepdim=True) + self.eps)
+        if _USE_0505_FIX:
+            q_fp32 = q.float()
+            q = (q_fp32 * torch.rsqrt(q_fp32.square().mean(-1, keepdim=True) + self.eps)).to(q.dtype)
+        else:
+            q = q * torch.rsqrt(q.square().mean(-1, keepdim=True) + self.eps)
         q = q.clone()
         dumper.dump("q_heads_after_norm", q)
         apply_rotary_emb(q[..., -rd:], freqs_cis)

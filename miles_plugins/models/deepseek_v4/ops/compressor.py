@@ -131,6 +131,8 @@ class DeepSeekV4Compressor(nn.Module):
         assert self.wkv.weight.dtype == torch.float32
         assert self.wgate.weight.dtype == torch.float32
 
+        dumper.dump("compress_input", x, compress_ratio=self.compress_ratio, head_dim=self.head_dim)
+
         bsz, seqlen_local, _ = x.size()
         ratio, overlap, _ = self.compress_ratio, self.overlap, self.head_dim
         dtype = x.dtype
@@ -172,7 +174,8 @@ class DeepSeekV4Compressor(nn.Module):
                 kv[..., : self.nope_head_dim] = fp8_simulate_qat(kv[..., : self.nope_head_dim], 64)
             else:
                 pass
-        dumper.dump("compress_final_out", kv, compress_ratio=ratio)
+        kv = kv.clone()
+        dumper.dump("compress_final_out", kv, compress_ratio=ratio, head_dim=self.head_dim)
 
         return kv
 

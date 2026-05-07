@@ -1,0 +1,139 @@
+# V4-Flash override (full operator coverage).
+# Megatron: tp/ep aliased to 8 ranks (only `tp:replicated` declared, drop ep).
+# SGLang: DP-attention, only attn_dp rank 0 has attention-stage data.
+# V4 manual mg dumps from miles_plugins are full-T per-rank, leading 1 batch dim.
+
+overrides:
+  # ===== Pre-attn input (canonical megatron source patcher) =====
+  - match: "^layer_input$"
+    side: target
+    dims: "t[sp] 1 hc_mult h # tp:replicated"
+  - match: "^layer_input$"
+    side: baseline
+    dims: "t hc_mult h # dp:=attn_dp"
+
+  - match: "^pre_mlp_residual$"
+    side: target
+    dims: "t[sp] 1 hc_mult h # tp:replicated"
+  # (sglang side doesn't have pre_mlp_residual)
+
+  - match: "^pre_mlp_layernorm_output$"
+    side: target
+    dims: "t[sp] 1 h # tp:replicated"
+  - match: "^pre_mlp_layernorm_output$"
+    side: baseline
+    dims: "t h # dp:=attn_dp"
+
+  - match: "^mlp_output$"
+    side: target
+    dims: "t[sp] 1 h # tp:replicated"
+  - match: "^mlp_output$"
+    side: baseline
+    dims: "t h # dp:=attn_dp"
+
+  # ===== Q path (T, [n_heads*head_dim] fused or per-head) =====
+  - match: "^wq_a_out$"
+    side: target
+    dims: "1 t q_lora_rank # tp:replicated"
+  - match: "^wq_a_out$"
+    side: baseline
+    dims: "t q_lora_rank # dp:=attn_dp"
+
+  - match: "^q_lora_after_norm$"
+    side: target
+    dims: "1 t q_lora_rank # tp:replicated"
+  - match: "^q_lora_after_norm$"
+    side: baseline
+    dims: "t q_lora_rank # dp:=attn_dp"
+
+  # wq_b_out: sg fused (T, n_heads*head_dim=32768); mg TP-sharded fused (1, T, n_heads_per_rank*head_dim=4096)
+  - match: "^wq_b_out$"
+    side: target
+    dims: "1 t (num_heads*head_dim)[tp]"
+  - match: "^wq_b_out$"
+    side: baseline
+    dims: "t (num_heads*head_dim) # dp:=attn_dp"
+
+  - match: "^q_heads_after_norm$"
+    side: target
+    dims: "1 t num_heads[tp] head_dim"
+  - match: "^q_heads_after_norm$"
+    side: baseline
+    dims: "t num_heads head_dim # dp:=attn_dp"
+
+  - match: "^attn_q$"
+    side: target
+    dims: "1 t num_heads[tp] head_dim"
+  - match: "^attn_q$"
+    side: baseline
+    dims: "t num_heads head_dim # dp:=attn_dp"
+
+  # ===== KV path (V4 MQA, single KV head, head_dim=512) =====
+  - match: "^wkv_out$"
+    side: target
+    dims: "1 t head_dim # tp:replicated"
+  - match: "^wkv_out$"
+    side: baseline
+    dims: "t head_dim # dp:=attn_dp"
+
+  - match: "^kv_after_norm$"
+    side: target
+    dims: "1 t head_dim # tp:replicated"
+  - match: "^kv_after_norm$"
+    side: baseline
+    dims: "t head_dim # dp:=attn_dp"
+
+  - match: "^attn_v$"
+    side: target
+    dims: "1 t head_dim # tp:replicated"
+  - match: "^attn_v$"
+    side: baseline
+    dims: "t head_dim # dp:=attn_dp"
+
+  # ===== Output projection (V4 has o_groups=8) =====
+  # mqa_wo_a_out: sg=(T, n_groups=8, o_lora_rank=1024); mg=(1, T, n_groups_per_rank=1, o_lora_rank), TP-sharded on n_groups
+  - match: "^mqa_wo_a_out$"
+    side: target
+    dims: "1 t n_groups[tp] o_lora_rank"
+  - match: "^mqa_wo_a_out$"
+    side: baseline
+    dims: "t n_groups o_lora_rank # dp:=attn_dp"
+
+  - match: "^mqa_wo_b_out$"
+    side: target
+    dims: "1 t h # tp:replicated"
+  - match: "^mqa_wo_b_out$"
+    side: baseline
+    dims: "t h # dp:=attn_dp"
+
+  # ===== Post-attn output (TP-sharded heads, V4-Flash specific layout) =====
+  - match: "^attn_output$"
+    side: target
+    dims: "1 t num_heads[tp] head_dim"
+  - match: "^attn_output$"
+    side: baseline
+    dims: "t num_heads head_dim # dp:=attn_dp"
+
+  # ===== MoE router (megatron canonical only) =====
+  - match: "^moe_router_logits$"
+    side: target
+    dims: "t[sp] 1 num_experts # tp:replicated"
+
+  - match: "^moe_topk_ids$"
+    side: target
+    dims: "t[sp] topk # tp:replicated"
+
+  # ===== Compressor (cr=128 long-range) — both sides per-token =====
+  - match: "^compressor_kv_score$"
+    side: target
+    dims: "1 t kv_score_dim # tp:replicated"
+  - match: "^compressor_kv_score$"
+    side: baseline
+    dims: "t kv_score_dim # dp:=attn_dp"
+
+  # compress_*_out: sg per-token (T, hidden); mg per-compressed-block (1, T_blocks, hidden_per_block)
+  # Different semantic — leave commented; can't directly compare.
+  # - match: "^compress_forward_out$" ...
+
+  # attn_q_in / attn_kv_in / attn_topk_idxs are inputs to FlashMLA / sparse attention.
+  # sg-side has attn_q_in but mg-side equivalent is dumped at different shape semantic — skip for now.

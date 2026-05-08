@@ -27,6 +27,10 @@ from grafter_transforms import (
     transform_compress_final_out_b2t,
     transform_compress_final_out_t2b,
     transform_compress_input_b2t,
+    transform_hc_attn_post_t2b,
+    transform_hc_attn_pre_t2b,
+    transform_hc_ffn_post_t2b,
+    transform_hc_ffn_pre_t2b,
     transform_input_layernorm_b2t,
     transform_layer_input_b2t,
     transform_layer_input_t2b,
@@ -401,6 +405,32 @@ def test_lm_head_logits_t2b_rank0():
     print("test_lm_head_logits_t2b_rank0 PASS")
 
 
+def test_hc_attn_pre_t2b_rank0():
+    """sg active (T_actual=2126, h=4096) → mg rank 0 (T_sp=272, 1, h). Same as mlp_output_t2b pattern."""
+    T_per_rank, h, T_actual = 272, 4096, 2126
+    sg_full = torch.randn(T_actual, h, dtype=torch.bfloat16)
+    parts = [sg_full] + [torch.zeros(0, h, dtype=torch.bfloat16) for _ in range(7)]
+    target = torch.full((T_per_rank, 1, h), 7.0, dtype=torch.bfloat16)
+    g = FakeGraftInput(received_list=parts, target=target, tags={"name": "hc_attn_pre"})
+    out = transform_hc_attn_pre_t2b(g)
+    assert out.shape == target.shape
+    assert torch.allclose(out[:T_per_rank, 0, :].float(), sg_full[:T_per_rank].float())
+    print("test_hc_attn_pre_t2b_rank0 PASS")
+
+
+def test_hc_attn_post_t2b_rank0():
+    """sg active (T_actual=2126, hc=4, h=4096) → mg rank 0 (T_sp=272, 1, hc, h). Same as layer_input_t2b pattern."""
+    T_per_rank, hc, h, T_actual = 272, 4, 4096, 2126
+    sg_full = torch.randn(T_actual, hc, h, dtype=torch.bfloat16)
+    parts = [sg_full] + [torch.zeros(0, hc, h, dtype=torch.bfloat16) for _ in range(7)]
+    target = torch.full((T_per_rank, 1, hc, h), 7.0, dtype=torch.bfloat16)
+    g = FakeGraftInput(received_list=parts, target=target, tags={"name": "hc_attn_post"})
+    out = transform_hc_attn_post_t2b(g)
+    assert out.shape == target.shape
+    assert torch.allclose(out[:T_per_rank, 0].float(), sg_full[:T_per_rank].float())
+    print("test_hc_attn_post_t2b_rank0 PASS")
+
+
 def test_post_norm_hidden_t2b_rank0():
     """sg active (T_actual=2126, h=4096) → mg rank 0 (T_sp=272, 1, h).
     Same shape pattern as mlp_output_t2b: post-final_layernorm hidden states.
@@ -470,6 +500,8 @@ if __name__ == "__main__":
     test_input_layernorm_b2t()
     test_attn_q_t2b_rank0()
     test_attn_v_t2b()
+    test_hc_attn_pre_t2b_rank0()
+    test_hc_attn_post_t2b_rank0()
     # dispatcher
     test_dispatcher_target_role_routes_compress_final_out_b2t()
     test_dispatcher_baseline_role_routes_compress_final_out_t2b()

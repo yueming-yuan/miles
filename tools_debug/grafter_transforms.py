@@ -344,6 +344,31 @@ def transform_post_norm_hidden_t2b(g):
     return transform_mlp_output_t2b(g)
 
 
+def transform_hc_attn_pre_t2b(g):
+    """sg post-hc_pre attn-side hidden (T_actual, h) → mg per-rank (T_sp, 1, h) SP-sharded.
+
+    Same shape pattern as mlp_output_t2b: post-hc_pre on attention side, fed to input_layernorm.
+    """
+    return transform_mlp_output_t2b(g)
+
+
+def transform_hc_ffn_pre_t2b(g):
+    """sg post-hc_pre ffn-side hidden (T_actual, h) → mg per-rank (T_sp, 1, h) SP-sharded."""
+    return transform_mlp_output_t2b(g)
+
+
+def transform_hc_attn_post_t2b(g):
+    """sg post-hc_post attn-side recombined (T_actual, hc=4, h) → mg per-rank (T_sp, 1, hc, h)
+    SP-sharded. Same shape pattern as layer_input_t2b."""
+    return transform_layer_input_t2b(g)
+
+
+def transform_hc_ffn_post_t2b(g):
+    """sg post-hc_post ffn-side recombined (T_actual, hc=4, h) → mg per-rank (T_sp, 1, hc, h)
+    SP-sharded. Same shape pattern as layer_input_t2b."""
+    return transform_layer_input_t2b(g)
+
+
 def transform_lm_head_logits_t2b(g):
     """sg gathered logits (T_actual, V_sg=129280) on active rank → mg gathered logits
     (b=1, s=T_padded, V_mg=130048) per rank (replicated post-TP-all-gather).
@@ -462,6 +487,10 @@ _DISPATCH = {
     ("mlp_output", "t2b"): transform_mlp_output_t2b,
     ("post_norm_hidden", "t2b"): transform_post_norm_hidden_t2b,
     ("lm_head_logits", "t2b"): transform_lm_head_logits_t2b,
+    ("hc_attn_pre", "t2b"): transform_hc_attn_pre_t2b,
+    ("hc_attn_post", "t2b"): transform_hc_attn_post_t2b,
+    ("hc_ffn_pre", "t2b"): transform_hc_ffn_pre_t2b,
+    ("hc_ffn_post", "t2b"): transform_hc_ffn_post_t2b,
 }
 
 

@@ -24,6 +24,7 @@ Sharding semantics (verified against `c4.cuh` source + cr=128 cross-check):
                                    garbage. mg per-block expects block-end mapping
                                    mg[k] = sg[(k+1)*ratio - 1].
 """
+
 from __future__ import annotations
 
 import os
@@ -125,6 +126,17 @@ def transform_attn_v_b2t(g):
     return p.to(device=target.device, dtype=target.dtype).contiguous()
 
 
+def transform_mqa_wo_b_out_b2t(g):
+    """mg per-rank (1, T_padded, hidden=4096) replicated post-RowParallel-allreduce
+    → sg (T_actual, hidden) on active DP rank.
+
+    All 8 mg ranks have identical mqa_wo_b_out (post-allreduce, pre-SP-scatter).
+    Take any one rank's data, squeeze bsz=1, slice T_padded → T_actual.
+    Same shape pattern as transform_attn_v_b2t but with hidden_size dim instead of head_dim.
+    """
+    return transform_attn_v_b2t(g)
+
+
 def transform_attn_output_b2t(g):
     return transform_attn_q_b2t(g)
 
@@ -206,6 +218,7 @@ def transform_compress_final_out_b2t(g):
 def _my_baseline_rank():
     try:
         import torch.distributed as dist
+
         if dist.is_initialized():
             return dist.get_rank()
     except Exception:
@@ -344,6 +357,20 @@ def transform_post_norm_hidden_t2b(g):
     return transform_mlp_output_t2b(g)
 
 
+def transform_moe_routing_map_t2b(g):
+    """sg dense (T_actual, num_experts=256) bool → mg per-rank (T_sp, 256) bool SP-sharded T.
+
+    Each baseline rank R takes T slice [R*T_sp : (R+1)*T_sp] from sg's full tensor.
+    Same shape pattern as mlp_output_t2b but 2D and bool dtype.
+    """
+    return transform_mlp_output_t2b(g)
+
+
+def transform_moe_probs_t2b(g):
+    """sg dense (T_actual, num_experts=256) float/bf16 → mg per-rank (T_sp, 256) SP-sharded T."""
+    return transform_mlp_output_t2b(g)
+
+
 def transform_hc_attn_pre_t2b(g):
     """sg post-hc_pre attn-side hidden (T_actual, h) → mg per-rank (T_sp, 1, h) SP-sharded.
 
@@ -478,6 +505,7 @@ _DISPATCH = {
     ("attn_q", "t2b"): transform_attn_q_t2b,
     ("attn_v", "b2t"): transform_attn_v_b2t,
     ("attn_v", "t2b"): transform_attn_v_t2b,
+    ("mqa_wo_b_out", "b2t"): transform_mqa_wo_b_out_b2t,
     ("mqa_wo_b_out", "t2b"): transform_attn_v_t2b,  # same layout: sg (T,h) → mg (1,T_padded,h) replicated
     ("attn_output", "b2t"): transform_attn_output_b2t,
     ("attn_output", "t2b"): transform_attn_output_t2b,
@@ -491,6 +519,8 @@ _DISPATCH = {
     ("hc_attn_post", "t2b"): transform_hc_attn_post_t2b,
     ("hc_ffn_pre", "t2b"): transform_hc_ffn_pre_t2b,
     ("hc_ffn_post", "t2b"): transform_hc_ffn_post_t2b,
+    ("moe_routing_map", "t2b"): transform_moe_routing_map_t2b,
+    ("moe_probs", "t2b"): transform_moe_probs_t2b,
 }
 
 
@@ -499,7 +529,5 @@ def transform(g):
     direction = _my_direction()
     fn = _DISPATCH.get((name, direction))
     if fn is None:
-        raise RuntimeError(
-            f"grafter_transforms: no transform registered for name={name!r} direction={direction!r}"
-        )
+        raise RuntimeError(f"grafter_transforms: no transform registered for name={name!r} direction={direction!r}")
     return fn(g)

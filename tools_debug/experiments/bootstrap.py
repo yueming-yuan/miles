@@ -24,46 +24,49 @@ from miles.utils.debug_utils.experiment_runner.registry import RunRecord, append
 
 _LEGACY_DUMP_PREFIX = "v4-iter59-"
 
+_LEGACY_DIRECT_DIRS: dict[str, dict[str, str]] = {
+    "sg-natural-prefill-e8env": {"sg": "sg-natural-e8env"},
+    "mg-fix0505": {"mg": "mg-fix0505"},
+    "sg-prefill-chunk8192": {"sg": "sg-prefill-chunk8192"},
+    "sg-prefill-no-f4": {"sg": "sg-prefill-no-f4"},
+    "mg-replay-moe": {"mg": "mg-replay-moe"},
+    "mg-replay-both": {"mg": "mg-replay-both"},
+}
+
 
 def _legacy_dirs(spec_name: str, output_root: Path) -> dict[str, Path]:
-    """Map a spec's expected legacy dump-dir paths under ``output_root``.
+    """Locate a spec's pre-existing dump dirs under ``output_root``.
 
-    Legacy script naming -- mirrors what the original launch_*.sh OUTPUT vars used.
+    Two patterns:
+    - direct: ``v4-iter59-<tag>``, used by sg_only / mg_only baselines and ablations
+      (entries in ``_LEGACY_DIRECT_DIRS``).
+    - grafter glob: ``v4-iter59-grafter-<spec>-*-{sg,mg}`` for grafter pairs. Glob
+      handles the descriptive suffix the legacy launchers added (e.g.
+      ``q-lora-only`` for a1, ``router-only`` for m1) without requiring a hardcoded
+      table per spec.
+
     Returns a dict with optional ``sg`` and ``mg`` keys; missing keys mean that
     side was never produced (e.g. sg_only specs have no mg dir).
     """
-    sg_legacy_name = f"{_LEGACY_DUMP_PREFIX}{_legacy_sg_tag(spec_name)}"
-    mg_legacy_name = f"{_LEGACY_DUMP_PREFIX}{_legacy_mg_tag(spec_name)}"
     out: dict[str, Path] = {}
-    sg_path = output_root / sg_legacy_name
-    mg_path = output_root / mg_legacy_name
-    if sg_path.is_dir():
-        out["sg"] = sg_path
-    if mg_path.is_dir():
-        out["mg"] = mg_path
+    direct = _LEGACY_DIRECT_DIRS.get(spec_name)
+    if direct is not None:
+        for side, tag in direct.items():
+            p = output_root / f"{_LEGACY_DUMP_PREFIX}{tag}"
+            if p.is_dir():
+                out[side] = p
+        return out
+
+    for side in ("sg", "mg"):
+        # match both <spec>-<suffix>-{side} (e.g. a1-q-lora-only-sg) and bare
+        # <spec>-{side} (e.g. combo-lora-proj-router-sg)
+        with_suffix = sorted(output_root.glob(f"{_LEGACY_DUMP_PREFIX}grafter-{spec_name}-*-{side}"))
+        bare = output_root / f"{_LEGACY_DUMP_PREFIX}grafter-{spec_name}-{side}"
+        if with_suffix:
+            out[side] = with_suffix[0]
+        elif bare.is_dir():
+            out[side] = bare
     return out
-
-
-def _legacy_sg_tag(spec_name: str) -> str:
-    if spec_name == "sg-natural-prefill-e8env":
-        return "sg-natural-e8env"
-    if spec_name.startswith("sg-prefill-"):
-        return spec_name
-    if spec_name == "mg-fix0505":
-        return "mg-fix0505"
-    if spec_name.startswith("mg-replay-"):
-        return spec_name
-    return f"grafter-{spec_name}-sg"
-
-
-def _legacy_mg_tag(spec_name: str) -> str:
-    if spec_name == "mg-fix0505":
-        return "mg-fix0505"
-    if spec_name.startswith("mg-replay-"):
-        return spec_name
-    if spec_name in ("sg-natural-prefill-e8env",) or spec_name.startswith("sg-prefill-"):
-        return ""
-    return f"grafter-{spec_name}-mg"
 
 
 def bootstrap(*, runs_jsonl: Path, dry_run: bool = False) -> int:

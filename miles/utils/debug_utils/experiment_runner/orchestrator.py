@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -63,8 +64,15 @@ class RunnerOptions:
     miles_repo_dir: str = "/workspace/miles"
     server_host: str = "0.0.0.0"
     server_port: int = 30000
-    sg_ready_timeout_s: int = 1800
+    sg_ready_timeout_s: int = 300
+    """Cap on sglang server startup. ~3-4min normal cold-load on V4-Flash; if
+    it exceeds 5min the server is hung (image, weight load, or kernel JIT)."""
     sg_request_timeout_s: int = 1800
+    mg_run_timeout_s: int = 3600
+    """Hard wall-clock cap for the mg subprocess. Default 1h covers ~15min forward
+    + grafter rendezvous (DUMPER_GRAFTER_TIMEOUT=600s gives gloo 10 min per stuck
+    op before raising). If the cap is hit the subprocess is killed and the run
+    fails fast instead of hanging the dispatcher."""
     image: str | None = None
     tp: int = 8
     pp: int = 1
@@ -176,7 +184,7 @@ def _execute_mg_only(run_config: RunConfig, options: RunnerOptions) -> _RunOutpu
         sp=options.sp,
         model_type=options.model_type,
     )
-    _run_subprocess_blocking(mg_launch.command, mg_launch.env, log_label="mg")
+    _run_subprocess_blocking(mg_launch.command, mg_launch.env, log_label="mg", timeout_s=options.mg_run_timeout_s)
 
     return _RunOutputs(
         mg_dump_dir=mg_launch.output_dir,
@@ -214,7 +222,7 @@ def _execute_grafter_pair(run_config: RunConfig, options: RunnerOptions) -> _Run
     t = threading.Thread(target=_trigger_thread, daemon=True)
     t.start()
 
-    _run_subprocess_blocking(mg_launch.command, mg_launch.env, log_label="mg")
+    _run_subprocess_blocking(mg_launch.command, mg_launch.env, log_label="mg", timeout_s=options.mg_run_timeout_s)
     t.join(timeout=options.sg_request_timeout_s)
     if "meta" not in trigger_meta_holder:
         raise RuntimeError("sg trigger thread did not return; check sg server log")
@@ -270,8 +278,29 @@ def _load_first_sample_tokens(rollout_path: Path) -> list[int]:
     return list(toks) if not isinstance(toks, list) else toks
 
 
-def _run_subprocess_blocking(command: str, env: dict[str, str], *, log_label: str) -> None:
-    rc = subprocess.run(["bash", "-c", command], env=env, check=False).returncode
+def _run_subprocess_blocking(
+    command: str,
+    env: dict[str, str],
+    *,
+    log_label: str,
+    timeout_s: int | None = None,
+) -> None:
+    """Run a foreground subprocess; raise if it exits non-zero or runs past the cap.
+
+    On timeout the process group is killed (start_new_session=True so the bash
+    wrapper + python + torchrun children all receive SIGKILL) so the run fails
+    fast rather than leaving zombies that eat GPU memory.
+    """
+    proc = subprocess.Popen(["bash", "-c", command], env=env, start_new_session=True)
+    try:
+        rc = proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, 9)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        raise RuntimeError(f"{log_label} subprocess exceeded timeout of {timeout_s}s; killed")
     if rc != 0:
         raise RuntimeError(f"{log_label} subprocess exited with rc={rc}")
 

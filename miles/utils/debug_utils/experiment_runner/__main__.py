@@ -54,6 +54,7 @@ def _runner_options_from_args(args: argparse.Namespace) -> RunnerOptions:
         server_port=args.server_port,
         sg_ready_timeout_s=args.sg_ready_timeout_s,
         sg_request_timeout_s=args.sg_request_timeout_s,
+        mg_run_timeout_s=args.mg_run_timeout_s,
         image=args.image,
         tp=args.tp,
         pp=args.pp,
@@ -175,8 +176,14 @@ def _add_runner_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--miles-repo-dir", default="/workspace/miles")
     parser.add_argument("--server-host", default="0.0.0.0")
     parser.add_argument("--server-port", type=int, default=30000)
-    parser.add_argument("--sg-ready-timeout-s", type=int, default=1800)
+    parser.add_argument("--sg-ready-timeout-s", type=int, default=300)
     parser.add_argument("--sg-request-timeout-s", type=int, default=1800)
+    parser.add_argument(
+        "--mg-run-timeout-s",
+        type=int,
+        default=3600,
+        help="Hard wall-clock cap for the mg subprocess; subprocess group is SIGKILLed if exceeded.",
+    )
     parser.add_argument("--image", default=None)
     parser.add_argument("--tp", type=int, default=8)
     parser.add_argument("--pp", type=int, default=1)

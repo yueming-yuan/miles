@@ -108,3 +108,35 @@ def test_run_outputs_default_is_all_none() -> None:
     assert outputs.sg_baseline_json is None
     assert outputs.mg_dump_dir is None
     assert outputs.mg_logprob_dir is None
+
+
+def test_subprocess_blocking_raises_on_timeout() -> None:
+    """Verify the mg subprocess timeout actually kills a hung process."""
+    import pytest as _pytest
+
+    from miles.utils.debug_utils.experiment_runner.orchestrator import _run_subprocess_blocking
+
+    with _pytest.raises(RuntimeError, match="exceeded timeout"):
+        _run_subprocess_blocking("sleep 30", env={}, log_label="t", timeout_s=1)
+
+
+def test_subprocess_blocking_passes_zero_exit() -> None:
+    from miles.utils.debug_utils.experiment_runner.orchestrator import _run_subprocess_blocking
+
+    _run_subprocess_blocking("true", env={}, log_label="t", timeout_s=5)
+
+
+def test_subprocess_blocking_raises_on_nonzero_exit() -> None:
+    import pytest as _pytest
+
+    from miles.utils.debug_utils.experiment_runner.orchestrator import _run_subprocess_blocking
+
+    with _pytest.raises(RuntimeError, match="rc=7"):
+        _run_subprocess_blocking("exit 7", env={}, log_label="t", timeout_s=5)
+
+
+def test_runner_options_default_mg_timeout_is_one_hour() -> None:
+    from miles.utils.debug_utils.experiment_runner.orchestrator import RunnerOptions
+
+    opts = RunnerOptions(runs_jsonl=Path("/x"), comparisons_jsonl=Path("/y"))
+    assert opts.mg_run_timeout_s == 3600

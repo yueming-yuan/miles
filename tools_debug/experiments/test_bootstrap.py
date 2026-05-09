@@ -55,6 +55,54 @@ def test_bootstrap_dry_run_does_not_write(tmp_path: Path) -> None:
     assert n == 0  # no real dumps in this test env
 
 
+def test_bootstrap_converts_legacy_sgl_response_to_rank0(tmp_path: Path) -> None:
+    """Bootstrap auto-converts legacy sgl_response_*.json to comparator's rank_0.json."""
+    fake_root = tmp_path / "dumper-out"
+    fake_root.mkdir()
+    sg_dir = fake_root / "v4-iter59-sg-natural-e8env"
+    sg_dir.mkdir()
+    (sg_dir / "sgl_response_1.json").write_text(
+        json.dumps(
+            {
+                "meta_info": {
+                    "input_token_logprobs": [
+                        [None, 100, None],
+                        [-1.5, 200, None],
+                        [-2.0, 300, None],
+                    ]
+                }
+            }
+        )
+    )
+
+    runs = tmp_path / "runs.jsonl"
+    with patch("tools_debug.experiments.bootstrap.CANONICAL") as mock_canonical:
+        mock_canonical.output_root = str(fake_root)
+        mock_canonical.name = "v4_e8env"
+        bootstrap(runs_jsonl=runs, dry_run=False)
+
+    rank0 = sg_dir / "rank_0.json"
+    assert rank0.exists()
+    payload = json.loads(rank0.read_text())
+    assert payload["rank"] == 0
+    assert len(payload["logprob_entries"][0]) == 2  # idx 0 dropped
+
+
+def test_bootstrap_dry_run_does_not_convert_legacy(tmp_path: Path) -> None:
+    fake_root = tmp_path / "dumper-out"
+    fake_root.mkdir()
+    sg_dir = fake_root / "v4-iter59-sg-natural-e8env"
+    sg_dir.mkdir()
+    (sg_dir / "sgl_response_1.json").write_text(
+        json.dumps({"meta_info": {"input_token_logprobs": [[None, 1, None], [-1.0, 2, None]]}})
+    )
+    with patch("tools_debug.experiments.bootstrap.CANONICAL") as mock_canonical:
+        mock_canonical.output_root = str(fake_root)
+        mock_canonical.name = "v4_e8env"
+        bootstrap(runs_jsonl=tmp_path / "runs.jsonl", dry_run=True)
+    assert not (sg_dir / "rank_0.json").exists()
+
+
 def test_bootstrap_writes_row_when_dump_dir_exists(tmp_path: Path) -> None:
     fake_root = tmp_path / "dumper-out"
     fake_root.mkdir()

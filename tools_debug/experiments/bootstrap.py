@@ -6,6 +6,12 @@ runner can attribute to specs in ``tools_debug.experiments.registry`` by name.
 This module walks the output root, matches each dir against a spec, and emits a
 synthetic ``runs.jsonl`` row pointing at the dump -- without re-running anything.
 
+Side effect: if a legacy sg dump dir contains ``sgl_response*.json`` (raw sglang
+HTTP response) but no ``rank_*.json``, this module converts the HTTP response
+to the comparator's ``rank_0.json`` schema in-place. The new runner emits
+``rank_0.json`` directly; legacy dumps need this one-time conversion so the
+comparator can read both fresh and legacy baselines through the same code path.
+
 Once bootstrapped, ``python -m miles.utils.debug_utils.experiment_runner compare
 --target a1 --baselines sg-natural-prefill-e8env`` works against legacy dumps
 through the same code path as fresh runs.
@@ -84,6 +90,8 @@ def bootstrap(*, runs_jsonl: Path, dry_run: bool = False) -> int:
         sg_dump_dir = dirs.get("sg")
         mg_dump_dir = dirs.get("mg")
         sg_baseline_json = _find_first(sg_dump_dir, ["sgl_response_1.json", "sgl_response.json", "sg_baseline.json"])
+        if not dry_run and sg_dump_dir is not None and sg_baseline_json is not None:
+            _ensure_rank0_from_sgl_response(sg_dump_dir=sg_dump_dir, sgl_response_path=sg_baseline_json)
         mg_logprob_dir = (mg_dump_dir / "megatron_logprobs") if mg_dump_dir is not None else None
         if mg_logprob_dir is not None and not mg_logprob_dir.is_dir():
             mg_logprob_dir = None
@@ -115,6 +123,31 @@ def bootstrap(*, runs_jsonl: Path, dry_run: bool = False) -> int:
             print(f"[bootstrap] registered {spec_name}: sg={sg_dump_dir} mg={mg_dump_dir}", flush=True)
         written += 1
     return written
+
+
+def _ensure_rank0_from_sgl_response(*, sg_dump_dir: Path, sgl_response_path: Path) -> None:
+    """If <sg_dump_dir>/rank_0.json does not exist, convert sgl_response_*.json to it.
+
+    Legacy launchers wrote sg's HTTP response verbatim as ``sgl_response_1.json``;
+    the new framework's comparator reads the run_megatron schema (``rank_*.json``).
+    Materialise the converted form so both fresh and legacy baselines share one
+    code path.
+    """
+    import json as _json
+
+    from miles.utils.debug_utils.experiment_runner.sg_trigger import write_baseline_logprob_json
+
+    rank0 = sg_dump_dir / "rank_0.json"
+    if rank0.exists():
+        return
+    raw = _json.loads(sgl_response_path.read_text())
+    if isinstance(raw, list):
+        raw = raw[0]
+    meta = raw.get("meta_info") or {}
+    if not meta.get("input_token_logprobs"):
+        return
+    n = write_baseline_logprob_json(meta_info=meta, output_path=rank0)
+    print(f"[bootstrap] converted {sgl_response_path.name} -> {rank0} ({n} positions)", flush=True)
 
 
 def _find_first(directory: Path | None, candidates: list[str]) -> Path | None:

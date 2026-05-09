@@ -135,8 +135,8 @@ def test_subprocess_blocking_raises_on_nonzero_exit() -> None:
         _run_subprocess_blocking("exit 7", env={}, log_label="t", timeout_s=5)
 
 
-def test_runner_options_default_mg_timeout_is_one_hour() -> None:
+def test_runner_options_default_mg_timeout_is_30min() -> None:
     from miles.utils.debug_utils.experiment_runner.orchestrator import RunnerOptions
 
     opts = RunnerOptions(runs_jsonl=Path("/x"), comparisons_jsonl=Path("/y"))
-    assert opts.mg_run_timeout_s == 3600
+    assert opts.mg_run_timeout_s == 1800

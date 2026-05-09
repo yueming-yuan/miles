@@ -181,7 +181,7 @@ def _add_runner_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--mg-run-timeout-s",
         type=int,
-        default=3600,
+        default=1800,
         help="Hard wall-clock cap for the mg subprocess; subprocess group is SIGKILLed if exceeded.",
     )
     parser.add_argument("--image", default=None)

@@ -68,11 +68,11 @@ class RunnerOptions:
     """Cap on sglang server startup. ~3-4min normal cold-load on V4-Flash; if
     it exceeds 5min the server is hung (image, weight load, or kernel JIT)."""
     sg_request_timeout_s: int = 1800
-    mg_run_timeout_s: int = 3600
-    """Hard wall-clock cap for the mg subprocess. Default 1h covers ~15min forward
-    + grafter rendezvous (DUMPER_GRAFTER_TIMEOUT=600s gives gloo 10 min per stuck
-    op before raising). If the cap is hit the subprocess is killed and the run
-    fails fast instead of hanging the dispatcher."""
+    mg_run_timeout_s: int = 1800
+    """Hard wall-clock cap for the mg subprocess. 30min covers ~15min forward +
+    grafter rendezvous (DUMPER_GRAFTER_TIMEOUT=600s gives gloo 10min per stuck
+    op before raising). If the cap is hit the subprocess group is SIGKILLed
+    so torchrun children do not leak GPU memory."""
     image: str | None = None
     tp: int = 8
     pp: int = 1

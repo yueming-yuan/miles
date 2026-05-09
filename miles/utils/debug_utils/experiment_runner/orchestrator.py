@@ -67,7 +67,7 @@ class RunnerOptions:
     sg_ready_timeout_s: int = 300
     """Cap on sglang server startup. ~3-4min normal cold-load on V4-Flash; if
     it exceeds 5min the server is hung (image, weight load, or kernel JIT)."""
-    sg_request_timeout_s: int = 1800
+    sg_request_timeout_s: int = 900
     mg_run_timeout_s: int = 1800
     """Hard wall-clock cap for the mg subprocess. 30min covers ~15min forward +
     grafter rendezvous (DUMPER_GRAFTER_TIMEOUT=600s gives gloo 10min per stuck

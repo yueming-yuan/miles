@@ -177,7 +177,7 @@ def _add_runner_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--server-host", default="0.0.0.0")
     parser.add_argument("--server-port", type=int, default=30000)
     parser.add_argument("--sg-ready-timeout-s", type=int, default=300)
-    parser.add_argument("--sg-request-timeout-s", type=int, default=1800)
+    parser.add_argument("--sg-request-timeout-s", type=int, default=900)
     parser.add_argument(
         "--mg-run-timeout-s",
         type=int,

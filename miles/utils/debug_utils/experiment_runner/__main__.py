@@ -54,6 +54,7 @@ def _runner_options_from_args(args: argparse.Namespace) -> RunnerOptions:
         server_port=args.server_port,
         sg_ready_timeout_s=args.sg_ready_timeout_s,
         sg_request_timeout_s=args.sg_request_timeout_s,
+        sg_post_mg_grace_s=args.sg_post_mg_grace_s,
         mg_run_timeout_s=args.mg_run_timeout_s,
         auto_cleanup_before_launch=not args.no_auto_cleanup,
         sg_pod_name=args.sg_pod_name,
@@ -215,6 +216,13 @@ def _add_runner_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--server-port", type=int, default=30000)
     parser.add_argument("--sg-ready-timeout-s", type=int, default=300)
     parser.add_argument("--sg-request-timeout-s", type=int, default=900)
+    parser.add_argument(
+        "--sg-post-mg-grace-s",
+        type=int,
+        default=60,
+        help="Seconds to wait for sg trigger thread after mg subprocess returned. "
+        "Sg can hang on a tail grafter collective once mg exited.",
+    )
     parser.add_argument(
         "--mg-run-timeout-s",
         type=int,

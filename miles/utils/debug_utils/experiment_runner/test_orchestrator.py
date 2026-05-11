@@ -150,6 +150,13 @@ def test_runner_options_cross_pod_fields_default_none() -> None:
     assert opts.mg_pod_ip is None
 
 
+def test_runner_options_sg_post_mg_grace_default_is_60s() -> None:
+    from miles.utils.debug_utils.experiment_runner.orchestrator import RunnerOptions
+
+    opts = RunnerOptions(runs_jsonl=Path("/x"), comparisons_jsonl=Path("/y"))
+    assert opts.sg_post_mg_grace_s == 60
+
+
 def test_resolve_mg_pod_ip_uses_explicit_when_set() -> None:
     from miles.utils.debug_utils.experiment_runner.orchestrator import RunnerOptions, _resolve_mg_pod_ip
 

@@ -68,6 +68,11 @@ class RunnerOptions:
     """Cap on sglang server startup. ~3-4min normal cold-load on V4-Flash; if
     it exceeds 5min the server is hung (image, weight load, or kernel JIT)."""
     sg_request_timeout_s: int = 900
+    sg_post_mg_grace_s: int = 60
+    """Cap on how long to wait for the sg trigger thread after mg subprocess
+    returned. Sg's HTTP handler can hang on a tail grafter collective once mg
+    exited (gloo op with no peer). Mg dumps + logprobs are already on disk by
+    then -- waiting longer than ~60s adds no information."""
     mg_run_timeout_s: int = 1800
     """Hard wall-clock cap for the mg subprocess. 30min covers ~15min forward +
     grafter rendezvous (DUMPER_GRAFTER_TIMEOUT=600s gives gloo 10min per stuck
@@ -261,7 +266,7 @@ def _execute_grafter_pair(run_config: RunConfig, options: RunnerOptions, run_id:
     # peer; sg's HTTP request handler propagates the error and the trigger thread
     # gets a non-2xx response. Mg dumps + logprobs are already on disk and remain
     # valid in that case -- treat the sg trigger as best-effort, log + proceed.
-    t.join(timeout=options.sg_request_timeout_s)
+    t.join(timeout=options.sg_post_mg_grace_s)
     baseline_json: Path | None
     if "meta" in trigger_meta_holder:
         baseline_json = sg_launch.log_path.parent / "sg_baseline.json"
@@ -271,7 +276,7 @@ def _execute_grafter_pair(run_config: RunConfig, options: RunnerOptions, run_id:
         msg = (
             f"sg trigger raised: {err}"
             if err is not None
-            else f"sg trigger thread did not finish within {options.sg_request_timeout_s}s"
+            else f"sg trigger thread did not finish within {options.sg_post_mg_grace_s}s after mg exited"
         )
         print(
             f"[orchestrator] WARN: {msg}. mg dumps + logprobs at "
@@ -469,13 +474,14 @@ def _run_baseline_comparisons(
 ) -> None:
     if not run_config.baselines:
         return
+    prompt_length = _load_sample_prompt_length(Path(run_config.rollout_data_path)) if run_config.rollout_data_path else None
     runs = load_runs(options.runs_jsonl)
     for baseline_name in run_config.baselines:
         baseline = find_latest_run(runs, baseline_name)
         if baseline is None:
             print(f"[runner] WARN: baseline {baseline_name!r} not in registry; skipping comparison", flush=True)
             continue
-        comparison = _compare_pair(target=target, baseline=baseline, outputs=outputs)
+        comparison = _compare_pair(target=target, baseline=baseline, outputs=outputs, prompt_length=prompt_length)
         if comparison is None:
             print(
                 f"[runner] WARN: cannot compare target={target.name} vs baseline={baseline_name} "
@@ -489,6 +495,18 @@ def _run_baseline_comparisons(
             baseline_run_name=baseline_name,
             jsonl_path=options.comparisons_jsonl,
         )
+        print(
+            f"[runner] comparison {target.name} vs {baseline_name}: "
+            f"all.mean_abs_diff={comparison.all.mean_abs_diff:.4f} "
+            f"(n={comparison.all.num_positions})"
+            + (
+                f"  response.mean_abs_diff={comparison.response.mean_abs_diff:.4f} "
+                f"(n={comparison.response.num_positions})"
+                if comparison.response is not None
+                else ""
+            ),
+            flush=True,
+        )
 
 
 def _compare_pair(
@@ -496,6 +514,7 @@ def _compare_pair(
     target: RunRecord,
     baseline: RunRecord,
     outputs: _RunOutputs,
+    prompt_length: int | None = None,
 ) -> LogprobComparison | None:
     """Pick logprob dirs from each side and run the comparator.
 
@@ -508,7 +527,13 @@ def _compare_pair(
     baseline_dir = _pick_baseline_logprob_dir(baseline)
     if target_dir is None or baseline_dir is None:
         return None
-    return compare_logprob_dirs(baseline_dir=baseline_dir, target_dir=target_dir)
+    return compare_logprob_dirs(baseline_dir=baseline_dir, target_dir=target_dir, prompt_length=prompt_length)
+
+
+def _load_sample_prompt_length(rollout_path: Path) -> int:
+    data = torch.load(rollout_path, weights_only=False)
+    s0 = data["samples"][0]
+    return len(s0["tokens"]) - int(s0["response_length"])
 
 
 def _pick_logprob_dir(target: RunRecord, outputs: _RunOutputs) -> Path | None:

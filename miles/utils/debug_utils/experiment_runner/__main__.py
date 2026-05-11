@@ -55,6 +55,7 @@ def _runner_options_from_args(args: argparse.Namespace) -> RunnerOptions:
         sg_ready_timeout_s=args.sg_ready_timeout_s,
         sg_request_timeout_s=args.sg_request_timeout_s,
         mg_run_timeout_s=args.mg_run_timeout_s,
+        auto_cleanup_before_launch=not args.no_auto_cleanup,
         image=args.image,
         tp=args.tp,
         pp=args.pp,
@@ -183,6 +184,12 @@ def _add_runner_options(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=1800,
         help="Hard wall-clock cap for the mg subprocess; subprocess group is SIGKILLed if exceeded.",
+    )
+    parser.add_argument(
+        "--no-auto-cleanup",
+        action="store_true",
+        help="Skip pre-launch pkill of stale sg / torchrun / run_megatron processes "
+        "(default: clean up). Pass when reusing a running sg server.",
     )
     parser.add_argument("--image", default=None)
     parser.add_argument("--tp", type=int, default=8)

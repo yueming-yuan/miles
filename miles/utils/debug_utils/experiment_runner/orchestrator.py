@@ -73,6 +73,12 @@ class RunnerOptions:
     grafter rendezvous (DUMPER_GRAFTER_TIMEOUT=600s gives gloo 10min per stuck
     op before raising). If the cap is hit the subprocess group is SIGKILLed
     so torchrun children do not leak GPU memory."""
+    auto_cleanup_before_launch: bool = True
+    """If True, pkill stale sg / torchrun / run_megatron processes before launching.
+    A previous run that was killed via ``rcli job session kill`` or that crashed
+    in mg subprocess leaves orphans holding GPU memory (start_new_session=True
+    detaches mg from the orchestrator's process group). Set False to preserve a
+    running sg server for reuse."""
     image: str | None = None
     tp: int = 8
     pp: int = 1
@@ -98,6 +104,8 @@ def run_experiment(
     options: RunnerOptions,
 ) -> RunRecord:
     """Execute one experiment end-to-end. Returns the registry row that was appended."""
+    if options.auto_cleanup_before_launch:
+        cleanup_stale_processes()
     started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     run_config = compose_run_config(canonical, spec)
     outputs = _execute(run_config, options)
@@ -276,6 +284,37 @@ def _load_first_sample_tokens(rollout_path: Path) -> list[int]:
     s0 = data["samples"][0]
     toks = s0["tokens"]
     return list(toks) if not isinstance(toks, list) else toks
+
+
+_STALE_PROCESS_PATTERNS: tuple[str, ...] = (
+    "sglang.launch_server",
+    "run_megatron.worker.main",
+    r"torchrun.*run_megatron",
+)
+"""Process command-line patterns the orchestrator kills before a fresh launch.
+
+These are the long-running compute processes a previous (crashed or rcli-killed)
+run leaves behind. They survive the orchestrator's death because mg is started
+with ``start_new_session=True`` and sg server is a daemonized subprocess. The
+orchestrator's own python process is NOT matched -- patterns target the worker
+binaries / entry points, not the framework code.
+"""
+
+
+def cleanup_stale_processes(*, settle_seconds: int = 3) -> None:
+    """SIGKILL any stale sg / mg / torchrun processes and wait for GPU mem to free.
+
+    Idempotent and safe to call on a clean pod (pkill -9 on no-match exits 1,
+    swallowed). ``settle_seconds`` gives the CUDA driver time to reclaim memory
+    after the processes die -- nvidia-smi still reports allocations for a beat
+    after the holding process exits.
+    """
+    for pattern in _STALE_PROCESS_PATTERNS:
+        subprocess.run(["pkill", "-9", "-f", pattern], check=False)
+    if settle_seconds > 0:
+        import time
+
+        time.sleep(settle_seconds)
 
 
 def _run_subprocess_blocking(

@@ -72,7 +72,7 @@ CANONICAL = CanonicalConfig(
         "DUMPER_GRAFTER_BACKEND": "gloo",
         "DUMPER_GRAFTER_TIMEOUT": "600",
         "DUMPER_GRAFTER_MASTER_ADDRESS": "127.0.0.1",
-        "DUMPER_GRAFTER_MASTER_PORT": "29500",
+        "DUMPER_GRAFTER_MASTER_PORT": "29501",
     },
     sg_model_path="/storage/yueming/iter59-hf-fp8",
     mg_hf_checkpoint="/storage/models/sgl-project/DeepSeek-V4-Flash-FP8",

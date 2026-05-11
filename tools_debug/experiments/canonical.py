@@ -1,10 +1,13 @@
-"""V4 canonical configuration -- baseline launch for all V4 divergence experiments.
+"""``v4_e8env`` configuration -- baseline launch for V4 divergence experiments.
 
-Reflects the ``sg-natural-prefill-e8env`` reference run. Mirrors the env vars and
-server / worker args the original tools_debug/launch_*.sh scripts set verbatim.
+Mirrors the env vars and server / worker args that ``tools_debug/launch_*.sh``
+scripts (A1, A2, ..., M1, E2-E8, H1, H1', Combo) set on
+``yueming-v4-debug-1n``. ``sg-natural-prefill-e8env`` is the empty-Δ run launched
+with exactly this config.
 
-To disable a fix this canonical sets, an ablation spec overrides the env var to
-``"0"`` (the codebase reads fix toggles via ``os.environ.get(VAR, "0") == "1"``).
+To disable a fix that ``v4_e8env`` sets, an ablation spec overrides the env var
+to ``"0"`` (the codebase reads fix toggles via
+``os.environ.get(VAR, "0") == "1"``).
 """
 
 from miles.utils.debug_utils.experiment_runner import CanonicalConfig

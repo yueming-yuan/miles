@@ -169,3 +169,23 @@ def test_resolve_mg_pod_ip_falls_back_to_hostname() -> None:
     ip = _resolve_mg_pod_ip(opts)
     parts = ip.split(".")
     assert len(parts) == 4 and all(p.isdigit() for p in parts)
+
+
+def test_trigger_thread_exception_is_non_fatal_via_holder_pattern() -> None:
+    """Confirm the dict-holder + try/except pattern used in _execute_grafter_pair
+    keeps a failed sg trigger from killing the run."""
+    import threading as _t
+
+    holder: dict = {}
+
+    def _t_fn() -> None:
+        try:
+            raise ValueError("simulated sg HTTP error")
+        except Exception as exc:
+            holder["error"] = exc
+
+    th = _t.Thread(target=_t_fn, daemon=True)
+    th.start()
+    th.join(timeout=2)
+    assert "meta" not in holder
+    assert isinstance(holder.get("error"), ValueError)

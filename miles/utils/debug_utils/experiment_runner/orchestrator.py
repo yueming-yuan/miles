@@ -247,18 +247,38 @@ def _execute_grafter_pair(run_config: RunConfig, options: RunnerOptions, run_id:
     trigger_meta_holder: dict[str, Any] = {}
 
     def _trigger_thread() -> None:
-        trigger_meta_holder["meta"] = _trigger_sg(run_config, options)
+        try:
+            trigger_meta_holder["meta"] = _trigger_sg(run_config, options)
+        except Exception as e:
+            trigger_meta_holder["error"] = e
 
     t = threading.Thread(target=_trigger_thread, daemon=True)
     t.start()
 
     _run_subprocess_blocking(mg_launch.command, mg_launch.env, log_label="mg", timeout_s=options.mg_run_timeout_s)
+    # Mg subprocess completed. Sg sometimes fires one extra grafter collective at
+    # decode-step end (after mg exited), which causes gloo to raise on the now-dead
+    # peer; sg's HTTP request handler propagates the error and the trigger thread
+    # gets a non-2xx response. Mg dumps + logprobs are already on disk and remain
+    # valid in that case -- treat the sg trigger as best-effort, log + proceed.
     t.join(timeout=options.sg_request_timeout_s)
-    if "meta" not in trigger_meta_holder:
-        raise RuntimeError("sg trigger thread did not return; check sg server log")
-
-    baseline_json = sg_launch.log_path.parent / "sg_baseline.json"
-    write_baseline_logprob_json(meta_info=trigger_meta_holder["meta"], output_path=baseline_json)
+    baseline_json: Path | None
+    if "meta" in trigger_meta_holder:
+        baseline_json = sg_launch.log_path.parent / "sg_baseline.json"
+        write_baseline_logprob_json(meta_info=trigger_meta_holder["meta"], output_path=baseline_json)
+    else:
+        err = trigger_meta_holder.get("error")
+        msg = (
+            f"sg trigger raised: {err}"
+            if err is not None
+            else f"sg trigger thread did not finish within {options.sg_request_timeout_s}s"
+        )
+        print(
+            f"[orchestrator] WARN: {msg}. mg dumps + logprobs at "
+            f"{mg_launch.logprob_output_dir} are still valid; sg_baseline.json not written.",
+            flush=True,
+        )
+        baseline_json = None
 
     return _RunOutputs(
         sg_dump_dir=sg_launch.log_path.parent,

@@ -20,6 +20,8 @@ def _grafter(
     b2t: str,
     t2b: str,
     baselines: tuple[str, ...] = ("sg-natural-prefill-e8env",),
+    mg_extra_patches_yaml: str | None = None,
+    sg_env: dict[str, str] | None = None,
 ) -> ExperimentSpec:
     return ExperimentSpec(
         name=name,
@@ -29,10 +31,45 @@ def _grafter(
         grafter_t2b_filter=t2b,
         dumper_filter=CANONICAL_DUMPER_FILTER,
         baselines=baselines,
+        mg_extra_patches_yaml=mg_extra_patches_yaml,
+        sg_env=sg_env or {},
     )
 
 
 _PREFILL = ' and graft_phase == "prefill"'
+
+
+# Megatron-side source-patcher YAML fragments. Each spec composes whichever
+# patches it needs into ``mg_extra_patches_yaml``. The targets injected here are
+# names mg's V4 plugin does NOT dump natively, so the grafter would otherwise see
+# a collective-op-sequence mismatch (mg skips a name sg fires, gathered slots
+# misalign, downstream slice access hits None).
+_PATCH_INPUT_LAYERNORM = """\
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention
+    edits:
+      - match: |
+          input_layernorm_output = self.input_layernorm(hidden_states)
+        append: "dumper.dump('input_layernorm', input_layernorm_output, dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
+"""
+
+_PATCH_PRE_MLP_LAYERNORM = """\
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
+    edits:
+      - match: "pre_mlp_layernorm_output = self._forward_pre_mlp_layernorm(hidden_states)"
+        append: "dumper.dump('pre_mlp_layernorm_output', pre_mlp_layernorm_output, dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
+"""
+
+_PATCH_MOE_ROUTING = """\
+  - target: megatron.core.transformer.moe.router.TopKRouter.forward
+    edits:
+      - match: "probs, routing_map = self.routing(logits, padding_mask=padding_mask, input_ids=input_ids)"
+        append: "dumper.dump('moe_routing_map', routing_map, dims='t e # tp:replicated ep:replicated'); dumper.dump('moe_probs', probs, dims='t e # tp:replicated ep:replicated')"
+"""
+
+
+def _patches(*fragments: str) -> str:
+    """Assemble a source-patcher YAML from one or more patch fragments."""
+    return "patches:\n" + "".join(fragments)
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     # ------------------------ baselines ------------------------
@@ -129,6 +166,11 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         description="A1 + A2 + A5' + M1 (LoRA paths + output proj + MoE router).",
         b2t=f'name in ("input_layernorm", "attn_output", "pre_mlp_layernorm_output"){_PREFILL}',
         t2b=f'name in ("attn_q", "attn_v", "mqa_wo_b_out", "moe_routing_map", "moe_probs"){_PREFILL}',
+        # mg dumps attn_output / mqa_wo_b_out / attn_q / attn_v natively in V4 plugin;
+        # input_layernorm / pre_mlp_layernorm_output / moe_routing_map / moe_probs need patches.
+        mg_extra_patches_yaml=_patches(_PATCH_INPUT_LAYERNORM, _PATCH_PRE_MLP_LAYERNORM, _PATCH_MOE_ROUTING),
+        # sg's HashTopK only dumps moe_routing_map / moe_probs when SGLANG_DSV4_DUMP_ROUTING=1.
+        sg_env={"SGLANG_DSV4_DUMP_ROUTING": "1"},
     ),
     # ------------------------ E series: per-block isolation ------------------------
     "e2-compressor": _grafter(

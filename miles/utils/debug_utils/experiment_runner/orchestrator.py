@@ -23,7 +23,6 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import os
-import shlex
 import subprocess
 import threading
 from pathlib import Path
@@ -270,44 +269,42 @@ def _execute_grafter_pair(run_config: RunConfig, options: RunnerOptions, run_id:
 
 
 def _start_sg_or_attach(sg_launch, options: RunnerOptions) -> subprocess.Popen | None:
-    """Start sg server (local subprocess or remote ``rcli exec``), or attach.
+    """Probe sg server; spawn locally if absent, or attach.
 
-    ``options.sg_pod_name == None`` -> local subprocess (single-pod runs).
-    ``options.sg_pod_name`` set -> ``rcli exec -d <sg_pod_name>`` so sg runs on
-    the named pod's GPUs. Caller must set ``options.server_host`` to that
-    pod's IP so port probe and HTTP trigger route correctly.
+    ``options.sg_pod_name`` set -> cross-pod mode (attach-only). Orchestrator
+    runs on mg pod. Sg must be pre-started on the sg pod by the operator
+    (pod-to-pod RPC needs K8s exec / kubectl / SSH, none of which are
+    available inside the pod image). Probes ``server_host:server_port`` (=
+    sg pod's IP:port) over pod-to-pod TCP; raises with an actionable message
+    if not reachable within ``sg_ready_timeout_s``.
+
+    ``options.sg_pod_name == None`` -> local single-pod mode. Spawns sg as a
+    background subprocess in this pod if not already on ``server_host:port``.
     """
     if probe_sg_ready(host=options.server_host, port=options.server_port):
         return None
-    sg_launch.log_path.parent.mkdir(parents=True, exist_ok=True)
     if options.sg_pod_name:
-        env_prefix = " && ".join(
-            f"export {k}={shlex.quote(v)}"
-            for k, v in sg_launch.env.items()
-            if k.startswith(("SGLANG_", "SGL_", "DUMPER_"))
-        )
-        remote_cmd = f"{env_prefix} && {sg_launch.command}" if env_prefix else sg_launch.command
-        proc = subprocess.Popen(
-            [
-                "rcli",
-                "exec",
-                "-d",
-                "--name",
-                f"er-sg-{sg_launch.log_path.parent.name}",
-                options.sg_pod_name,
-                remote_cmd,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    else:
-        proc = subprocess.Popen(
-            ["bash", "-c", sg_launch.command],
-            env=sg_launch.env,
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        try:
+            wait_for_sg_ready(
+                host=options.server_host,
+                port=options.server_port,
+                timeout_s=options.sg_ready_timeout_s,
+            )
+        except TimeoutError as e:
+            raise RuntimeError(
+                f"cross-pod mode (sg_pod_name={options.sg_pod_name!r}) requires sg server already "
+                f"running on {options.server_host}:{options.server_port}; this orchestrator does not "
+                f"spawn remote processes. {e}"
+            ) from None
+        return None
+    sg_launch.log_path.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.Popen(
+        ["bash", "-c", sg_launch.command],
+        env=sg_launch.env,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     wait_for_sg_ready(host=options.server_host, port=options.server_port, timeout_s=options.sg_ready_timeout_s)
     return proc
 

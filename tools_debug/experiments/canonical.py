@@ -51,7 +51,7 @@ CANONICAL = CanonicalConfig(
         "--page-size",
         "256",
         "--max-running-requests",
-        "1",
+        "8",
         "--chunked-prefill-size",
         "32768",
         "--weight-loader-drop-cache-after-load",

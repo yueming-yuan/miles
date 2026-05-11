@@ -66,10 +66,43 @@ _PATCH_MOE_ROUTING = """\
         append: "dumper.dump('moe_routing_map', routing_map, dims='t e # tp:replicated ep:replicated'); dumper.dump('moe_probs', probs, dims='t e # tp:replicated ep:replicated')"
 """
 
+_PATCH_LAYER_INPUT = """\
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_attention
+    edits:
+      - match: |
+          inference_context = deprecate_inference_params(inference_context, inference_params)
+        append: "dumper.dump('layer_input', hidden_states, dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
+"""
+
+_PATCH_POST_NORM_HIDDEN = """\
+  - target: megatron.core.transformer.transformer_block.TransformerBlock.forward
+    edits:
+      - match: |
+                      hidden_states = make_viewless_tensor(
+                          inp=hidden_states, requires_grad=True, keep_graph=True
+                      )
+        append: "dumper.dump('post_norm_hidden', hidden_states, dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
+"""
+
+_PATCH_PRE_MLP_RESIDUAL = """\
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
+    edits:
+      - match: "residual = hidden_states"
+        append: "dumper.dump('pre_mlp_residual', residual, dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
+"""
+
+_PATCH_MLP_OUTPUT = """\
+  - target: megatron.core.transformer.transformer_layer.TransformerLayer._forward_mlp
+    edits:
+      - match: "return self._forward_post_mlp("
+        prepend: "dumper.dump('mlp_output', mlp_output_with_bias[0], dims='t[cp:zigzag,sp] 1 h # tp:replicated ep:replicated')"
+"""
+
 
 def _patches(*fragments: str) -> str:
     """Assemble a source-patcher YAML from one or more patch fragments."""
     return "patches:\n" + "".join(fragments)
+
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     # ------------------------ baselines ------------------------
@@ -128,24 +161,28 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         description="Replace sg.Q-LoRA path only. b2t=input_layernorm, t2b=attn_q.",
         b2t=f'name == "input_layernorm"{_PREFILL}',
         t2b=f'name == "attn_q"{_PREFILL}',
+        mg_extra_patches_yaml=_patches(_PATCH_INPUT_LAYERNORM),
     ),
     "a2": _grafter(
         name="a2",
         description="Replace sg.KV-LoRA path only. b2t=input_layernorm, t2b=attn_v.",
         b2t=f'name == "input_layernorm"{_PREFILL}',
         t2b=f'name == "attn_v"{_PREFILL}',
+        mg_extra_patches_yaml=_patches(_PATCH_INPUT_LAYERNORM),
     ),
     "a3": _grafter(
         name="a3",
         description="Replace sg.Q-LoRA + KV-LoRA paths. t2b=attn_q,attn_v.",
         b2t=f'name == "input_layernorm"{_PREFILL}',
         t2b=f'name in ("attn_q", "attn_v"){_PREFILL}',
+        mg_extra_patches_yaml=_patches(_PATCH_INPUT_LAYERNORM),
     ),
     "a4": _grafter(
         name="a4",
         description="Replace sg.attn block from input_layernorm. t2b=attn_output.",
         b2t=f'name == "input_layernorm"{_PREFILL}',
         t2b=f'name == "attn_output"{_PREFILL}',
+        mg_extra_patches_yaml=_patches(_PATCH_INPUT_LAYERNORM),
     ),
     "a5b": _grafter(
         name="a5b",
@@ -159,6 +196,8 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         description="Replace sg.MoE router only. t2b=moe_routing_map+moe_probs.",
         b2t=f'name == "pre_mlp_layernorm_output"{_PREFILL}',
         t2b=f'name in ("moe_routing_map", "moe_probs"){_PREFILL}',
+        mg_extra_patches_yaml=_patches(_PATCH_PRE_MLP_LAYERNORM, _PATCH_MOE_ROUTING),
+        sg_env={"SGLANG_DSV4_DUMP_ROUTING": "1"},
     ),
     # ------------------------ Combo ------------------------
     "combo-lora-proj-router": _grafter(
@@ -190,6 +229,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         description="Replace sg.MLP/MoE block. b2t=pre_mlp_layernorm_output, t2b=mlp_output.",
         b2t=f'name == "pre_mlp_layernorm_output"{_PREFILL}',
         t2b=f'name == "mlp_output"{_PREFILL}',
+        mg_extra_patches_yaml=_patches(_PATCH_PRE_MLP_RESIDUAL, _PATCH_PRE_MLP_LAYERNORM, _PATCH_MLP_OUTPUT),
     ),
     "e5-sparse-mla": _grafter(
         name="e5-sparse-mla",
@@ -205,18 +245,21 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         description="Full per-layer override: t2b=layer_input only. Probes whole-layer divergence baseline.",
         b2t="False",
         t2b=f'name == "layer_input"{_PREFILL}',
+        mg_extra_patches_yaml=_patches(_PATCH_LAYER_INPUT),
     ),
     "e7-full-layer-plus-mhc": _grafter(
         name="e7-full-layer-plus-mhc",
         description="E6 + post_norm_hidden override (post-final-RMSNorm).",
         b2t="False",
         t2b=f'name in ("layer_input", "post_norm_hidden"){_PREFILL}',
+        mg_extra_patches_yaml=_patches(_PATCH_LAYER_INPUT, _PATCH_POST_NORM_HIDDEN),
     ),
     "e8-lm-head": _grafter(
         name="e8-lm-head",
         description="E7 + lm_head_logits override. Confirms mg.collected logprobs == log_softmax(sg.lm_head_logits).",
         b2t="False",
         t2b=f'name in ("layer_input", "post_norm_hidden", "lm_head_logits"){_PREFILL}',
+        mg_extra_patches_yaml=_patches(_PATCH_LAYER_INPUT, _PATCH_POST_NORM_HIDDEN),
     ),
     # ------------------------ H series: hyper-connection (invalid) ------------------------
     "h1": _grafter(

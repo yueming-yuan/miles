@@ -140,3 +140,32 @@ def test_runner_options_default_mg_timeout_is_30min() -> None:
 
     opts = RunnerOptions(runs_jsonl=Path("/x"), comparisons_jsonl=Path("/y"))
     assert opts.mg_run_timeout_s == 1800
+
+
+def test_runner_options_cross_pod_fields_default_none() -> None:
+    from miles.utils.debug_utils.experiment_runner.orchestrator import RunnerOptions
+
+    opts = RunnerOptions(runs_jsonl=Path("/x"), comparisons_jsonl=Path("/y"))
+    assert opts.sg_pod_name is None
+    assert opts.mg_pod_ip is None
+
+
+def test_resolve_mg_pod_ip_uses_explicit_when_set() -> None:
+    from miles.utils.debug_utils.experiment_runner.orchestrator import RunnerOptions, _resolve_mg_pod_ip
+
+    opts = RunnerOptions(
+        runs_jsonl=Path("/x"),
+        comparisons_jsonl=Path("/y"),
+        sg_pod_name="some-pod",
+        mg_pod_ip="172.16.190.152",
+    )
+    assert _resolve_mg_pod_ip(opts) == "172.16.190.152"
+
+
+def test_resolve_mg_pod_ip_falls_back_to_hostname() -> None:
+    from miles.utils.debug_utils.experiment_runner.orchestrator import RunnerOptions, _resolve_mg_pod_ip
+
+    opts = RunnerOptions(runs_jsonl=Path("/x"), comparisons_jsonl=Path("/y"), sg_pod_name="some-pod")
+    ip = _resolve_mg_pod_ip(opts)
+    parts = ip.split(".")
+    assert len(parts) == 4 and all(p.isdigit() for p in parts)

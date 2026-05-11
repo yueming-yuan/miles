@@ -23,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import os
+import shlex
 import subprocess
 import threading
 from pathlib import Path
@@ -79,6 +80,17 @@ class RunnerOptions:
     in mg subprocess leaves orphans holding GPU memory (start_new_session=True
     detaches mg from the orchestrator's process group). Set False to preserve a
     running sg server for reuse."""
+    sg_pod_name: str | None = None
+    """If set, sg server launches via ``rcli exec -d <sg_pod_name>`` instead of
+    a local subprocess. Required for grafter_pair runs of V4-Flash 285B where
+    sg + mg cannot share one 8x140GB pod (weights alone exceed 140GB per GPU).
+    Caller sets ``server_host`` to ``sg_pod_name``'s pod IP so probe / HTTP
+    trigger route across pods."""
+    mg_pod_ip: str | None = None
+    """When ``sg_pod_name`` is set, this is the IP grafter rank 0 (mg side =
+    baseline) binds. Sg target ranks connect to this address. If None and
+    sg_pod_name is set, orchestrator resolves this pod's own IP via
+    ``socket.gethostbyname(socket.gethostname())``."""
     image: str | None = None
     tp: int = 8
     pp: int = 1
@@ -208,7 +220,7 @@ def _execute_grafter_pair(run_config: RunConfig, options: RunnerOptions, run_id:
         run_config,
         sg_repo_dir=options.sg_repo_dir,
         miles_repo_dir=options.miles_repo_dir,
-        server_host=options.server_host,
+        server_host="0.0.0.0",
         server_port=options.server_port,
         run_id=run_id,
     )
@@ -225,6 +237,12 @@ def _execute_grafter_pair(run_config: RunConfig, options: RunnerOptions, run_id:
         model_type=options.model_type,
         run_id=run_id,
     )
+    # Cross-pod: override grafter master address to mg pod's IP so sg-side target
+    # ranks connect there (rank 0 = mg local rank 0 binds this IP:port).
+    if options.sg_pod_name:
+        mg_ip = _resolve_mg_pod_ip(options)
+        sg_launch.env["DUMPER_GRAFTER_MASTER_ADDRESS"] = mg_ip
+        mg_launch.env["DUMPER_GRAFTER_MASTER_ADDRESS"] = mg_ip
     _start_sg_or_attach(sg_launch, options)
 
     trigger_meta_holder: dict[str, Any] = {}
@@ -252,18 +270,60 @@ def _execute_grafter_pair(run_config: RunConfig, options: RunnerOptions, run_id:
 
 
 def _start_sg_or_attach(sg_launch, options: RunnerOptions) -> subprocess.Popen | None:
+    """Start sg server (local subprocess or remote ``rcli exec``), or attach.
+
+    ``options.sg_pod_name == None`` -> local subprocess (single-pod runs).
+    ``options.sg_pod_name`` set -> ``rcli exec -d <sg_pod_name>`` so sg runs on
+    the named pod's GPUs. Caller must set ``options.server_host`` to that
+    pod's IP so port probe and HTTP trigger route correctly.
+    """
     if probe_sg_ready(host=options.server_host, port=options.server_port):
         return None
     sg_launch.log_path.parent.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.Popen(
-        ["bash", "-c", sg_launch.command],
-        env=sg_launch.env,
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    if options.sg_pod_name:
+        env_prefix = " && ".join(
+            f"export {k}={shlex.quote(v)}"
+            for k, v in sg_launch.env.items()
+            if k.startswith(("SGLANG_", "SGL_", "DUMPER_"))
+        )
+        remote_cmd = f"{env_prefix} && {sg_launch.command}" if env_prefix else sg_launch.command
+        proc = subprocess.Popen(
+            [
+                "rcli",
+                "exec",
+                "-d",
+                "--name",
+                f"er-sg-{sg_launch.log_path.parent.name}",
+                options.sg_pod_name,
+                remote_cmd,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    else:
+        proc = subprocess.Popen(
+            ["bash", "-c", sg_launch.command],
+            env=sg_launch.env,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     wait_for_sg_ready(host=options.server_host, port=options.server_port, timeout_s=options.sg_ready_timeout_s)
     return proc
+
+
+def _resolve_mg_pod_ip(options: RunnerOptions) -> str:
+    """Return the IP that mg pod's local rank 0 will bind for grafter rendezvous.
+
+    Explicit ``options.mg_pod_ip`` wins. Otherwise resolve via
+    ``socket.gethostbyname(socket.gethostname())`` — works on K8s pods where
+    the hostname == pod name and resolves to the pod's IP.
+    """
+    if options.mg_pod_ip:
+        return options.mg_pod_ip
+    import socket
+
+    return socket.gethostbyname(socket.gethostname())
 
 
 def _trigger_sg(run_config: RunConfig, options: RunnerOptions) -> dict[str, Any]:

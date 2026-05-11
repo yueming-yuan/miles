@@ -56,6 +56,8 @@ def _runner_options_from_args(args: argparse.Namespace) -> RunnerOptions:
         sg_request_timeout_s=args.sg_request_timeout_s,
         mg_run_timeout_s=args.mg_run_timeout_s,
         auto_cleanup_before_launch=not args.no_auto_cleanup,
+        sg_pod_name=args.sg_pod_name,
+        mg_pod_ip=args.mg_pod_ip,
         image=args.image,
         tp=args.tp,
         pp=args.pp,
@@ -190,6 +192,18 @@ def _add_runner_options(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Skip pre-launch pkill of stale sg / torchrun / run_megatron processes "
         "(default: clean up). Pass when reusing a running sg server.",
+    )
+    parser.add_argument(
+        "--sg-pod-name",
+        default=None,
+        help="rcli pod name where sg server should run. Required for V4-Flash grafter_pair "
+        "(weights alone exceed single 8x140GB pod). Sg launched via 'rcli exec -d'.",
+    )
+    parser.add_argument(
+        "--mg-pod-ip",
+        default=None,
+        help="IP that mg local rank 0 binds for grafter rendezvous. Auto-resolved from "
+        "hostname if omitted. Sg target ranks connect to this address:port.",
     )
     parser.add_argument("--image", default=None)
     parser.add_argument("--tp", type=int, default=8)

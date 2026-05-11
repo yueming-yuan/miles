@@ -59,6 +59,7 @@ def build_mg_launch_command(
     model_type: str = "deepseek-v4-flash",
     output_subdir: str = "mg",
     patcher_yaml_dir: Path | None = None,
+    run_id: str | None = None,
 ) -> MgLaunchCommand:
     """Compose the full ``run_megatron run`` command for ``run_config``.
 
@@ -75,7 +76,8 @@ def build_mg_launch_command(
     these are call-site decisions, not per-spec deltas. Override per call when porting
     older single-rank or different-parallel runs.
     """
-    output_dir = Path(run_config.output_root) / f"{run_config.name}-{output_subdir}"
+    suffix = f"{output_subdir}-{run_id}" if run_id else output_subdir
+    output_dir = Path(run_config.output_root) / f"{run_config.name}-{suffix}"
     log_path = output_dir / "run.log"
     logprob_output_dir = output_dir / "megatron_logprobs"
 

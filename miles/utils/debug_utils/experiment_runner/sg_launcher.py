@@ -59,19 +59,24 @@ def build_sg_launch_command(
     server_host: str = "0.0.0.0",
     server_port: int = 30000,
     output_subdir: str = "sg",
+    run_id: str | None = None,
 ) -> SgLaunchCommand:
     """Compose the full sglang launch command for ``run_config``.
 
-    The output dump directory is ``<output_root>/<run_name>-<output_subdir>/``;
-    the server log goes to ``<dump_dir>/server.log``. The command ``cd``s into
-    the sglang source tree (so ``-m sglang.launch_server`` resolves to the
-    in-tree, editable-installed version) and adds ``miles_repo_dir`` to
-    PYTHONPATH so V4 plugin imports succeed.
+    The output dump directory is ``<output_root>/<run_name>-<output_subdir>[-<run_id>]/``;
+    when ``run_id`` is provided (UTC timestamp from the orchestrator), each run
+    of the same spec writes to a distinct directory so concurrent reruns or
+    monitor scripts do not see each other's sg server.log content. The server
+    log goes to ``<dump_dir>/server.log``. The command ``cd``s into the sglang
+    source tree (so ``-m sglang.launch_server`` resolves to the in-tree,
+    editable-installed version) and adds ``miles_repo_dir`` to PYTHONPATH so
+    V4 plugin imports succeed.
 
     If ``run_config.kind == grafter_pair``, DUMPER_GRAFTER_* env vars are wired
     in, the spec's b2t/t2b filters set, and ROLE=target.
     """
-    dump_dir = Path(run_config.output_root) / f"{run_config.name}-{output_subdir}"
+    suffix = f"{output_subdir}-{run_id}" if run_id else output_subdir
+    dump_dir = Path(run_config.output_root) / f"{run_config.name}-{suffix}"
     log_path = dump_dir / "server.log"
 
     env: dict[str, str] = {**os.environ, **run_config.sg_env}

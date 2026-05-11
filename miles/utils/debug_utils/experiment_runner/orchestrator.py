@@ -107,8 +107,9 @@ def run_experiment(
     if options.auto_cleanup_before_launch:
         cleanup_stale_processes()
     started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    run_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
     run_config = compose_run_config(canonical, spec)
-    outputs = _execute(run_config, options)
+    outputs = _execute(run_config, options, run_id)
 
     finished_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -146,23 +147,24 @@ def run_experiment(
     return record
 
 
-def _execute(run_config: RunConfig, options: RunnerOptions) -> _RunOutputs:
+def _execute(run_config: RunConfig, options: RunnerOptions, run_id: str) -> _RunOutputs:
     if run_config.kind == RunKind.SG_ONLY:
-        return _execute_sg_only(run_config, options)
+        return _execute_sg_only(run_config, options, run_id)
     if run_config.kind == RunKind.MG_ONLY:
-        return _execute_mg_only(run_config, options)
+        return _execute_mg_only(run_config, options, run_id)
     if run_config.kind == RunKind.GRAFTER_PAIR:
-        return _execute_grafter_pair(run_config, options)
+        return _execute_grafter_pair(run_config, options, run_id)
     raise ValueError(f"unknown kind: {run_config.kind}")
 
 
-def _execute_sg_only(run_config: RunConfig, options: RunnerOptions) -> _RunOutputs:
+def _execute_sg_only(run_config: RunConfig, options: RunnerOptions, run_id: str) -> _RunOutputs:
     sg_launch = build_sg_launch_command(
         run_config,
         sg_repo_dir=options.sg_repo_dir,
         miles_repo_dir=options.miles_repo_dir,
         server_host=options.server_host,
         server_port=options.server_port,
+        run_id=run_id,
     )
     sg_proc = _start_sg_or_attach(sg_launch, options)
     try:
@@ -179,7 +181,7 @@ def _execute_sg_only(run_config: RunConfig, options: RunnerOptions) -> _RunOutpu
     )
 
 
-def _execute_mg_only(run_config: RunConfig, options: RunnerOptions) -> _RunOutputs:
+def _execute_mg_only(run_config: RunConfig, options: RunnerOptions, run_id: str) -> _RunOutputs:
     mg_launch = build_mg_launch_command(
         run_config,
         miles_repo_dir=options.miles_repo_dir,
@@ -191,6 +193,7 @@ def _execute_mg_only(run_config: RunConfig, options: RunnerOptions) -> _RunOutpu
         batch_size=options.batch_size,
         sp=options.sp,
         model_type=options.model_type,
+        run_id=run_id,
     )
     _run_subprocess_blocking(mg_launch.command, mg_launch.env, log_label="mg", timeout_s=options.mg_run_timeout_s)
 
@@ -200,13 +203,14 @@ def _execute_mg_only(run_config: RunConfig, options: RunnerOptions) -> _RunOutpu
     )
 
 
-def _execute_grafter_pair(run_config: RunConfig, options: RunnerOptions) -> _RunOutputs:
+def _execute_grafter_pair(run_config: RunConfig, options: RunnerOptions, run_id: str) -> _RunOutputs:
     sg_launch = build_sg_launch_command(
         run_config,
         sg_repo_dir=options.sg_repo_dir,
         miles_repo_dir=options.miles_repo_dir,
         server_host=options.server_host,
         server_port=options.server_port,
+        run_id=run_id,
     )
     mg_launch = build_mg_launch_command(
         run_config,
@@ -219,6 +223,7 @@ def _execute_grafter_pair(run_config: RunConfig, options: RunnerOptions) -> _Run
         batch_size=options.batch_size,
         sp=options.sp,
         model_type=options.model_type,
+        run_id=run_id,
     )
     _start_sg_or_attach(sg_launch, options)
 

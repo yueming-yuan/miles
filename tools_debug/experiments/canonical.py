@@ -56,7 +56,7 @@ CANONICAL = CanonicalConfig(
         "32768",
         "--weight-loader-drop-cache-after-load",
         "--mem-fraction-static",
-        "0.5",
+        "0.3",
         "--disable-cuda-graph",
         "--watchdog-timeout",
         "1800",

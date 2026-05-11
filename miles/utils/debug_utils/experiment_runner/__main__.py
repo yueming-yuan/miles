@@ -144,6 +144,40 @@ def _cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_start_sg(args: argparse.Namespace) -> int:
+    """Compose and exec the sg server command for a spec; used to start sg pod-side.
+
+    For cross-pod grafter_pair runs the operator first runs::
+
+        rcli exec -d <sg_pod> 'python -m miles.utils.debug_utils.experiment_runner start-sg \\
+            --exp <spec> --registry-module <pkg> --mg-pod-ip <ip>'
+
+    This subcommand composes the v4_e8env config + the spec's deltas, builds the
+    sg launch command, overrides DUMPER_GRAFTER_MASTER_ADDRESS to ``mg_pod_ip``,
+    and ``execvpe``s into ``bash -c <sg_launch.command>``. The result is sg
+    server listening on ``0.0.0.0:30000`` with the right grafter env.
+    """
+    import datetime as _dt
+    import os as _os
+
+    from miles.utils.debug_utils.experiment_runner.sg_launcher import build_sg_launch_command
+    from miles.utils.debug_utils.experiment_runner.spec import compose_run_config
+
+    canonical, specs = _load_registry(args.registry_module)
+    if args.exp not in specs:
+        print(f"unknown experiment: {args.exp!r}; known: {sorted(specs)}", file=sys.stderr)
+        return 1
+    run_id = args.run_id or _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%S")
+    run_config = compose_run_config(canonical, specs[args.exp])
+    launch = build_sg_launch_command(run_config, server_host="0.0.0.0", server_port=args.server_port, run_id=run_id)
+    if args.mg_pod_ip:
+        launch.env["DUMPER_GRAFTER_MASTER_ADDRESS"] = args.mg_pod_ip
+    print(f"[start-sg] run_id={run_id} dump_dir={launch.log_path.parent}", flush=True)
+    print(f"[start-sg] grafter_master={launch.env.get('DUMPER_GRAFTER_MASTER_ADDRESS')}", flush=True)
+    _os.execvpe("bash", ["bash", "-c", launch.command], launch.env)
+    return 0  # unreachable
+
+
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     experiments = [e.strip() for e in args.experiments.split(",") if e.strip()]
     pods = [p.strip() for p in args.pods.split(",") if p.strip()]
@@ -245,6 +279,14 @@ def main(argv: list[str] | None = None) -> int:
     p_list = sub.add_parser("list", help="list registered experiments")
     p_list.add_argument("--registry-module", required=True)
     p_list.set_defaults(func=_cmd_list)
+
+    p_sg = sub.add_parser("start-sg", help="compose and exec sg server (for cross-pod grafter setup)")
+    p_sg.add_argument("--exp", required=True)
+    p_sg.add_argument("--registry-module", required=True)
+    p_sg.add_argument("--mg-pod-ip", default=None, help="DUMPER_GRAFTER_MASTER_ADDRESS to set")
+    p_sg.add_argument("--server-port", type=int, default=30000)
+    p_sg.add_argument("--run-id", default=None, help="dump dir suffix; auto-generated if omitted")
+    p_sg.set_defaults(func=_cmd_start_sg)
 
     p_disp = sub.add_parser("dispatch", help="run experiments concurrently across rcli-managed pods")
     p_disp.add_argument("--experiments", required=True, help="comma-separated experiment names")

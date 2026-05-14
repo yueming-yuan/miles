@@ -146,9 +146,6 @@ def _patch_4layer_model_type(args: ScriptArgs):
     if not cfg.exists():
         return
     text = cfg.read_text()
-    if '"model_type": "deepseek_v4"' in text:
-        cfg.write_text(text.replace('"model_type": "deepseek_v4"', '"model_type": "deepseek_ref"'))
-        print(f"[patch] {cfg}: model_type deepseek_v4 → deepseek_ref")
 
 
 def _prepare_download(args: ScriptArgs):

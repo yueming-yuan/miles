@@ -1058,6 +1058,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The rollout routing replay technique from https://arxiv.org/abs/2510.11370",
             )
             parser.add_argument(
+                "--use-indexer-replay",
+                action="store_true",
+                default=False,
+                help="Replay indexer topk decisions for layers with indexers.",
+            )
+            parser.add_argument(
+                "--use-rollout-indexer-replay",
+                action="store_true",
+                default=False,
+                help="Replay indexer topk from rollout during training.",
+            )
+            parser.add_argument(
+                "--rollout-indexer-replay-num-layers",
+                type=int,
+                default=None,
+                help="Number of indexer replay streams returned by the rollout engine.",
+            )
+            parser.add_argument(
+                "--rollout-indexer-replay-topk",
+                type=int,
+                default=None,
+                help="Top-k width of each indexer replay stream returned by the rollout engine.",
+            )
+            parser.add_argument(
                 "--use-opsm",
                 action="store_true",
                 default=False,
@@ -2189,6 +2213,21 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+
+    if args.use_rollout_indexer_replay:
+        args.use_indexer_replay = True
+        if args.rollout_indexer_replay_num_layers is None:
+            args.rollout_indexer_replay_num_layers = getattr(args, "num_indexer_layers", None)
+        if args.rollout_indexer_replay_topk is None:
+            args.rollout_indexer_replay_topk = getattr(args, "index_topk", None)
+        assert args.rollout_indexer_replay_num_layers is not None, (
+            "--use-rollout-indexer-replay requires --rollout-indexer-replay-num-layers " "or args.num_indexer_layers"
+        )
+        assert (
+            args.rollout_indexer_replay_topk is not None
+        ), "--use-rollout-indexer-replay requires --rollout-indexer-replay-topk or args.index_topk"
+        assert args.rollout_indexer_replay_num_layers > 0, "--rollout-indexer-replay-num-layers must be positive"
+        assert args.rollout_indexer_replay_topk > 0, "--rollout-indexer-replay-topk must be positive"
 
     if args.eval_max_context_len is None:
         logger.info(

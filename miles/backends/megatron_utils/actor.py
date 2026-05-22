@@ -108,10 +108,10 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.lr_warmup_iters = self.args.critic_lr_warmup_iters
         else:
             for m in all_replay_managers:
-                m.enabled = getattr(self.args, f"use_{m.name}_replay")
+                m.enabled = getattr(self.args, f"use_{m.name}_replay", False)
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
-        (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
+        self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
             args, role
         )
 
@@ -372,7 +372,7 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
     def _use_rollout_replay(self, m) -> bool:
-        return getattr(self.args, f"use_rollout_{m.name}_replay")
+        return getattr(self.args, f"use_rollout_{m.name}_replay", False)
 
     def train_actor(self, rollout_id: int, rollout_data: RolloutBatch) -> None:
         # Create data iterator for log_probs and train.

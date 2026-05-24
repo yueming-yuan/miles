@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import torch
 
-from miles.utils import replay_audit
+from miles.utils.debug_utils import replay_audit
 
 
 class _FakeDumper:

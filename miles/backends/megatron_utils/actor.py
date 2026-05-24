@@ -12,8 +12,9 @@ from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig
 
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import replay_audit, train_dump_utils
+from miles.utils import train_dump_utils
 from miles.utils.context_utils import with_defer
+from miles.utils.debug_utils import replay_audit
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer

@@ -4,7 +4,7 @@ import os
 import torch
 import torch.distributed as dist
 
-from miles.utils import replay_audit
+from miles.utils.debug_utils import replay_audit
 
 logger = logging.getLogger(__name__)
 

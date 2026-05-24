@@ -28,49 +28,9 @@ register_cuda_ci(est_time=2000, suite="stage-c-8-gpu-h100", labels=["short"])
 app = typer.Typer()
 
 _RUN_DIR = Path(tempfile.mkdtemp(prefix="test_miles_replay_audit_"))
-_MEGATRON_SOURCE_PATCHER_CONFIG_PATH = _RUN_DIR / "replay_audit_megatron_source_patcher.yaml"
-_SGLANG_SOURCE_PATCHER_CONFIG_PATH = _RUN_DIR / "replay_audit_sglang_source_patcher.yaml"
 
 _REPLAY_FILTER = 'name.startswith("replay_")'
 _COMPARATOR_FILTER = "name=replay_"
-
-_SGLANG_SOURCE_PATCHER_CONFIG_YAML = """\
-patches:
-  - target: sglang.srt.state_capturer.routed_experts.RoutedExpertsCapturer.capture
-    preamble: |
-      from miles.utils.debug_utils import replay_audit
-    edits:
-      - match: "super().capture(layer_id, topk_indices)"
-        prepend: "replay_audit.dump_sglang_capture_topk(kind='routing', stream_id=layer_id, top_indices=topk_indices[:, : self.topk_size], dims='t topk # tp:replicated')"
-  - target: sglang.srt.state_capturer.base.BaseTopkCapturer.capture
-    preamble: |
-      from miles.utils.debug_utils import replay_audit
-    edits:
-      - match: "self.device_cache.capture(layer_id, topk_indices)"
-        prepend: |
-          if self.device_cache.name == 'indexer_topk':
-              replay_audit.dump_sglang_capture_topk(kind='indexer', stream_id=layer_id, top_indices=topk_indices, dims='t topk # tp:replicated')
-"""
-
-_MEGATRON_SOURCE_PATCHER_CONFIG_YAML = """\
-patches:
-  - target: megatron.core.transformer.moe.moe_utils.topk_routing_with_score_function
-    preamble: |
-      from miles.utils.debug_utils import replay_audit
-      from miles.utils.replay_base import routing_replay_manager
-    edits:
-      - match: |
-          if scaling_factor:
-              probs = probs * scaling_factor
-        prepend: "replay_audit.dump_current_replay_topk(kind='routing', manager=routing_replay_manager)"
-  - target: megatron.core.transformer.experimental_attention_variant.dsa.DSAIndexer.forward_with_scores
-    preamble: |
-      from miles.utils.debug_utils import replay_audit
-      from miles.utils.replay_base import indexer_replay_manager
-    edits:
-      - match: "return index_scores, topk_indices"
-        prepend: "replay_audit.dump_current_replay_topk(kind='indexer', manager=indexer_replay_manager)"
-"""
 
 
 @dataclass(frozen=True)
@@ -144,13 +104,6 @@ def prepare() -> None:
             hf_checkpoint=cfg.local_dir,
         )
 
-    _write_source_patcher_configs()
-
-
-def _write_source_patcher_configs() -> None:
-    _MEGATRON_SOURCE_PATCHER_CONFIG_PATH.write_text(_MEGATRON_SOURCE_PATCHER_CONFIG_YAML)
-    _SGLANG_SOURCE_PATCHER_CONFIG_PATH.write_text(_SGLANG_SOURCE_PATCHER_CONFIG_YAML)
-
 
 def _build_replay_args(kinds: list[str]) -> str:
     args = []
@@ -221,8 +174,6 @@ def _build_train_args(*, mode: str, dump_dir: Path, kinds: list[str]) -> str:
         f"--dumper-inference {dumper_filter} "
         f"--dumper-fwd-only enable_model_value=0 enable_model_grad=0 {dumper_filter} "
         f"--dumper-fwd-bwd {'enable_model_value=0 enable_model_grad=0 ' + dumper_filter if dump_fwd_bwd else 'enable=false'} "
-        f"--dumper-source-patcher-config-train {_MEGATRON_SOURCE_PATCHER_CONFIG_PATH} "
-        f"--dumper-source-patcher-config-inference {_SGLANG_SOURCE_PATCHER_CONFIG_PATH} "
     )
 
     misc_args = (
@@ -255,7 +206,6 @@ def _build_train_args(*, mode: str, dump_dir: Path, kinds: list[str]) -> str:
 def _execute(mode: str, dump_dir: Path) -> None:
     cfg = _model_config()
     kinds = _enabled_kinds()
-    _write_source_patcher_configs()
     train_args = _build_train_args(mode=mode, dump_dir=dump_dir, kinds=kinds)
 
     U.execute_train(

@@ -1070,6 +1070,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Replay indexer topk from rollout during training.",
             )
             parser.add_argument(
+                "--replay-audit-source-dir",
+                type=str,
+                default=None,
+                help="Optional baseline dump directory for replay audit source tensors.",
+            )
+            parser.add_argument(
                 "--rollout-indexer-replay-num-layers",
                 type=int,
                 default=None,

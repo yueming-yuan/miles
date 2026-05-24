@@ -4,6 +4,8 @@ import os
 import torch
 import torch.distributed as dist
 
+from miles.utils import replay_audit
+
 logger = logging.getLogger(__name__)
 
 
@@ -16,13 +18,15 @@ class Replay:
         self.forward_index = 0
         self.backward_index = 0
         self.top_indices_list: list[torch.Tensor] = []
+        self.manager_name: str | None = None
+        self.source_stream_id: int | None = None
 
     def record(self, top_indices: torch.Tensor):
         buf = torch.empty_like(top_indices, device="cpu", pin_memory=True)
         buf.copy_(top_indices)
         self.top_indices_list.append(buf)
 
-    def pop_forward(self) -> torch.Tensor:
+    def pop_forward(self, device=None) -> torch.Tensor:
         if self.forward_index >= len(self.top_indices_list):
             shapes = [
                 t.shape if isinstance(t, torch.Tensor) else f"non-tensor({type(t)})" for t in self.top_indices_list
@@ -33,12 +37,12 @@ class Replay:
             )
         top_indices = self.top_indices_list[self.forward_index]
         self.forward_index += 1
-        return top_indices.to(torch.cuda.current_device())
+        return top_indices.to(device if device is not None else torch.cuda.current_device())
 
-    def pop_backward(self) -> torch.Tensor:
+    def pop_backward(self, device=None) -> torch.Tensor:
         top_indices = self.top_indices_list[self.backward_index]
         self.backward_index += 1
-        return top_indices.to(torch.cuda.current_device())
+        return top_indices.to(device if device is not None else torch.cuda.current_device())
 
     def clear(self):
         self.forward_index = 0
@@ -61,6 +65,7 @@ class BaseReplayManager:
 
     def create_replay(self) -> Replay:
         replay = Replay()
+        replay.manager_name = self.name
         self.replays.append(replay)
         return replay
 
@@ -125,10 +130,12 @@ class BaseReplayManager:
                 return result
 
             elif stage == "replay_forward":
-                return _get_replay_result(replay.pop_forward(), scores, topk, *args, **kwargs)
+                top_indices = replay.pop_forward(device=scores.device)
+                replay_audit.dump_target_replay_indices(kind=manager.name, replay=replay, top_indices=top_indices)
+                return _get_replay_result(top_indices, scores, topk, *args, **kwargs)
 
             elif stage == "replay_backward":
-                return _get_replay_result(replay.pop_backward(), scores, topk, *args, **kwargs)
+                return _get_replay_result(replay.pop_backward(device=scores.device), scores, topk, *args, **kwargs)
 
             else:
                 return old_topk_fn(scores, topk, *args, **kwargs)

@@ -12,7 +12,7 @@ from torch_memory_saver import torch_memory_saver
 from transformers import AutoConfig
 
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import train_dump_utils
+from miles.utils import replay_audit, train_dump_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.memory_utils import clear_memory, print_memory
@@ -245,6 +245,7 @@ class MegatronTrainRayActor(TrainRayActor):
         num_microbatches,
         rollout_data,
         data_key: str,
+        replay_kind: str,
         replay_list: list,
         register_replay_list_func,
         if_sp_region=True,
@@ -270,13 +271,20 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             return torch.cat([data, pad_tensor], dim=0)
 
-        for _ in range(sum(num_microbatches)):
+        for microbatch_idx in range(sum(num_microbatches)):
             batch = data_iterator[0].get_next([data_key, "tokens", "max_seq_lens"])
             replay_data = batch[data_key]
             tokens = batch["tokens"]
             assert len(replay_data) == len(tokens)
             for a, b in zip(replay_data, tokens, strict=False):
                 assert a.shape[0] == b.shape[0] - 1, f"{a.shape}, {b.shape}"
+
+            replay_audit.dump_source_replay_data(
+                kind=replay_kind,
+                replay_data=replay_data,
+                step=microbatch_idx,
+                source_dir=getattr(self.args, "replay_audit_source_dir", None),
+            )
 
             # We need to pad the experts to the last token. We won't calculate loss on this token so this should be fine.
             # TODO: fuse this padding with the following slice_with_cp to reduce memory copy.
@@ -385,6 +393,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     num_microbatches,
                     rollout_data,
                     data_key=m.data_key,
+                    replay_kind=m.name,
                     replay_list=m.replays,
                     register_replay_list_func=get_register_replay_list_func(m),
                     if_sp_region=m.if_sp_region,

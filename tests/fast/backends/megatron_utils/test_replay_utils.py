@@ -11,6 +11,7 @@ from miles.backends.megatron_utils.replay_utils import _register_replay_list_seq
 class _Replay:
     def __init__(self):
         self.recorded = []
+        self.source_stream_id = None
 
     def record(self, value):
         self.recorded.append(value)
@@ -23,6 +24,7 @@ def test_register_replay_list_sequential_records_matching_streams():
     _register_replay_list_sequential(replays, replay_data, _models=None)
 
     for replay_idx, replay in enumerate(replays):
+        assert replay.source_stream_id == replay_idx
         assert len(replay.recorded) == 1
         torch.testing.assert_close(replay.recorded[0], replay_data[:, replay_idx])
 

@@ -23,6 +23,7 @@ def _register_replay_list_moe(replay_list, replay_data, models):
 
     for replay_idx, layer_idx in enumerate(layer_indices):
         layer_data = replay_data[:, layer_idx]
+        replay_list[replay_idx].source_stream_id = layer_idx
         replay_list[replay_idx].record(layer_data)
 
 
@@ -33,6 +34,7 @@ def _register_replay_list_sequential(replay_list, replay_data, _models):
         )
 
     for replay_idx, replay in enumerate(replay_list):
+        replay.source_stream_id = replay_idx
         replay.record(replay_data[:, replay_idx])
 
 

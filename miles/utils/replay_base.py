@@ -4,8 +4,6 @@ import os
 import torch
 import torch.distributed as dist
 
-from miles.utils.debug_utils import replay_audit
-
 logger = logging.getLogger(__name__)
 
 
@@ -20,6 +18,7 @@ class Replay:
         self.top_indices_list: list[torch.Tensor] = []
         self.manager_name: str | None = None
         self.source_stream_id: int | None = None
+        self.last_forward_top_indices_raw: torch.Tensor | None = None
 
     def record(self, top_indices: torch.Tensor):
         buf = torch.empty_like(top_indices, device="cpu", pin_memory=True)
@@ -37,7 +36,9 @@ class Replay:
             )
         top_indices = self.top_indices_list[self.forward_index]
         self.forward_index += 1
-        return top_indices.to(device if device is not None else torch.cuda.current_device())
+        result = top_indices.to(device if device is not None else torch.cuda.current_device())
+        self.last_forward_top_indices_raw = result
+        return result
 
     def pop_backward(self, device=None) -> torch.Tensor:
         top_indices = self.top_indices_list[self.backward_index]
@@ -48,9 +49,11 @@ class Replay:
         self.forward_index = 0
         self.backward_index = 0
         self.top_indices_list = []
+        self.last_forward_top_indices_raw = None
 
     def clear_forward(self):
         self.forward_index = 0
+        self.last_forward_top_indices_raw = None
 
 
 class BaseReplayManager:
@@ -100,6 +103,7 @@ class BaseReplayManager:
 
             padding_mask = top_indices == -1
             if padding_mask.any():
+                top_indices = top_indices.clone()
                 top_indices[padding_mask] = (
                     torch.arange(padding_mask.sum(), device=top_indices.device, dtype=top_indices.dtype)
                     % scores.shape[1]
@@ -131,7 +135,6 @@ class BaseReplayManager:
 
             elif stage == "replay_forward":
                 top_indices = replay.pop_forward(device=scores.device)
-                replay_audit.dump_target_replay_indices(kind=manager.name, replay=replay, top_indices=top_indices)
                 return _get_replay_result(top_indices, scores, topk, *args, **kwargs)
 
             elif stage == "replay_backward":

@@ -17,51 +17,41 @@ class _FakeDumper:
         self.calls.append((name, value.detach().cpu().clone(), dims))
 
 
-def test_dump_source_replay_data_writes_dumper_compatible_files(tmp_path, monkeypatch):
+def test_dump_sglang_capture_topk_uses_stream_name(monkeypatch):
+    fake = _FakeDumper()
     monkeypatch.setenv(replay_audit.ENABLE_ENV, "1")
-    monkeypatch.setattr(replay_audit, "_CLEANED_SOURCE_DIRS", set())
-    monkeypatch.setattr(replay_audit, "_SOURCE_DUMP_INDEX", 0)
+    monkeypatch.setattr(replay_audit, "_get_sglang_dumper", lambda: fake)
 
-    first = torch.arange(2 * 2 * 2, dtype=torch.int32).reshape(2, 2, 2)
-    second = torch.arange(8, 12, dtype=torch.int32).reshape(1, 2, 2)
-
-    replay_audit.dump_source_replay_data(
+    replay_audit.dump_sglang_capture_topk(
         kind="indexer",
-        replay_data=[first, second],
-        step=3,
-        source_dir=tmp_path,
+        stream_id=3,
+        top_indices=torch.tensor([[1, 2], [3, 4]], dtype=torch.int32),
+        dims="t topk # tp:replicated",
     )
 
-    files = sorted(tmp_path.glob("*.pt"))
-    assert len(files) == 2
-
-    by_name = {torch.load(path, weights_only=False)["meta"]["name"]: path for path in files}
-    item = torch.load(by_name["replay_indexer_stream_0001"], weights_only=False)
-
-    assert item["meta"]["step"] == 3
-    assert item["meta"]["rank"] == 0
-    assert item["meta"]["dims"] == replay_audit.SOURCE_DIMS
-    torch.testing.assert_close(
-        item["value"],
-        torch.tensor([[2, 3], [6, 7], [10, 11]], dtype=torch.int32),
-    )
+    assert len(fake.calls) == 1
+    name, value, dims = fake.calls[0]
+    assert name == "replay_indexer_stream_0003"
+    torch.testing.assert_close(value, torch.tensor([[1, 2], [3, 4]], dtype=torch.int32))
+    assert dims == "t topk # tp:replicated"
 
 
-def test_dump_source_replay_data_noops_without_source_dir(monkeypatch, tmp_path):
+def test_dump_sglang_capture_topk_honors_kind_filter(monkeypatch):
+    fake = _FakeDumper()
     monkeypatch.setenv(replay_audit.ENABLE_ENV, "1")
-    monkeypatch.delenv(replay_audit.SOURCE_DIR_ENV, raising=False)
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(replay_audit.KINDS_ENV, "routing")
+    monkeypatch.setattr(replay_audit, "_get_sglang_dumper", lambda: fake)
 
-    replay_audit.dump_source_replay_data(
-        kind="routing",
-        replay_data=torch.zeros(1, 1, 1, dtype=torch.int32),
-        step=0,
+    replay_audit.dump_sglang_capture_topk(
+        kind="indexer",
+        stream_id=0,
+        top_indices=torch.tensor([[1]], dtype=torch.int32),
     )
 
-    assert list(tmp_path.iterdir()) == []
+    assert fake.calls == []
 
 
-def test_dump_target_replay_indices_filters_padding_rows(monkeypatch):
+def test_dump_current_replay_topk_filters_padding_rows(monkeypatch):
     fake = _FakeDumper()
     monkeypatch.setenv(replay_audit.ENABLE_ENV, "1")
     monkeypatch.setattr(replay_audit, "_get_sglang_dumper", lambda: fake)
@@ -71,27 +61,52 @@ def test_dump_target_replay_indices_filters_padding_rows(monkeypatch):
         lambda axis: {"tp": 2, "sp": 2, "ep": 4}.get(axis, 1),
     )
 
-    replay = SimpleNamespace(source_stream_id=7)
-    top_indices = torch.tensor([[4, 5], [-1, -1], [6, 7]], dtype=torch.int32)
+    replay = SimpleNamespace(
+        source_stream_id=7,
+        last_forward_top_indices_raw=torch.tensor([[4, 5], [-1, -1], [6, 7]], dtype=torch.int32),
+    )
+    manager = SimpleNamespace(stage="replay_forward", get_current=lambda: replay)
 
-    replay_audit.dump_target_replay_indices(kind="indexer", replay=replay, top_indices=top_indices)
+    replay_audit.dump_current_replay_topk(kind="indexer", manager=manager)
 
     assert len(fake.calls) == 1
     name, value, dims = fake.calls[0]
     assert name == "replay_indexer_stream_0007"
     torch.testing.assert_close(value, torch.tensor([[4, 5], [6, 7]], dtype=torch.int32))
     assert dims == "t[cp:zigzag] topk # tp:replicated sp:replicated ep:replicated"
+    assert replay.last_forward_top_indices_raw is None
 
 
-def test_dump_target_replay_indices_requires_stream_id(monkeypatch):
+def test_dump_current_replay_topk_requires_stream_id(monkeypatch):
     fake = _FakeDumper()
     monkeypatch.setenv(replay_audit.ENABLE_ENV, "1")
     monkeypatch.setattr(replay_audit, "_get_sglang_dumper", lambda: fake)
 
-    replay_audit.dump_target_replay_indices(
-        kind="routing",
-        replay=SimpleNamespace(source_stream_id=None),
-        top_indices=torch.tensor([[1, 2]], dtype=torch.int32),
+    replay = SimpleNamespace(
+        source_stream_id=None,
+        last_forward_top_indices_raw=torch.tensor([[1, 2]], dtype=torch.int32),
     )
+    manager = SimpleNamespace(stage="replay_forward", get_current=lambda: replay)
+
+    replay_audit.dump_current_replay_topk(
+        kind="routing",
+        manager=manager,
+    )
+
+    assert fake.calls == []
+
+
+def test_dump_current_replay_topk_requires_replay_forward_stage(monkeypatch):
+    fake = _FakeDumper()
+    monkeypatch.setenv(replay_audit.ENABLE_ENV, "1")
+    monkeypatch.setattr(replay_audit, "_get_sglang_dumper", lambda: fake)
+
+    replay = SimpleNamespace(
+        source_stream_id=0,
+        last_forward_top_indices_raw=torch.tensor([[1, 2]], dtype=torch.int32),
+    )
+    manager = SimpleNamespace(stage="record", get_current=lambda: replay)
+
+    replay_audit.dump_current_replay_topk(kind="routing", manager=manager)
 
     assert fake.calls == []

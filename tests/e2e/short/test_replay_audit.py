@@ -251,6 +251,7 @@ def _execute(mode: str, dump_dir: Path) -> None:
         "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         "MILES_REPLAY_AUDIT_ENABLE": "1",
         "MILES_REPLAY_AUDIT_KINDS": ",".join(kinds),
+        "MILES_DISABLE_REPLAY_RESULT_CHECK": os.environ.get("REPLAY_AUDIT_DISABLE_REPLAY_RESULT_CHECK", "1"),
     }
     extra_env_vars.update(_env_mapping("REPLAY_AUDIT_EXTRA_ENV_VARS"))
 

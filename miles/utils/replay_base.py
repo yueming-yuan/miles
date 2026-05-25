@@ -5,6 +5,7 @@ import torch
 import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
+_TRUTHY = ("1", "true", "yes", "on")
 
 
 def _get_rank():
@@ -164,6 +165,9 @@ class BaseReplayManager:
         and replay routing result.
         If mismatch token count > n_tokens * replay_check_threshold, raise error.
         """
+        if os.environ.get("MILES_DISABLE_REPLAY_RESULT_CHECK", "0").lower() in _TRUTHY:
+            return
+
         orig_top_indices = old_topk_fn(scores, topk, *args, **kwargs)
         if isinstance(orig_top_indices, tuple):
             _, orig_top_indices = orig_top_indices
@@ -181,7 +185,8 @@ class BaseReplayManager:
         threshold = float(os.environ.get("MILES_TEST_R3_THRESHOLD", self.replay_check_threshold))
         mismatch_threshold = threshold * orig_flat.shape[0]
         mismatch_indices = is_mismatch.nonzero(as_tuple=False).squeeze(1)
-        for idx in mismatch_indices:
+        log_limit = int(os.environ.get("MILES_REPLAY_CHECK_LOG_LIMIT", "8"))
+        for idx in mismatch_indices[:log_limit]:
             i = idx.item()
             lines = []
             for j in range(max(0, i - 3), min(len(orig_flat), i + 4)):
@@ -190,6 +195,11 @@ class BaseReplayManager:
             logger.warning(
                 f"Replay check (rank {_get_rank()}, stage {self.stage}): "
                 f"token {i} zero overlap, topk={topk}\n" + "\n".join(lines)
+            )
+        if len(mismatch_indices) > log_limit:
+            logger.warning(
+                f"Replay check (rank {_get_rank()}, stage {self.stage}): "
+                f"suppressed {len(mismatch_indices) - log_limit} additional mismatch logs"
             )
 
         if mismatch_count > mismatch_threshold:

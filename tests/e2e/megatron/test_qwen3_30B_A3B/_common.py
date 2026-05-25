@@ -22,12 +22,19 @@ class CaseConfig:
     use_bridge: bool = False
     use_r3: bool = False
     max_tokens_per_gpu: int = 8192
+    # Extra train args appended after canonical args, and extra env vars
+    # merged into `execute_train`'s extra_env_vars. Used by replay-audit
+    # tests to layer their own flags/env on top of canonical Qwen setup.
+    extra_args: str = ""
+    extra_env_vars: dict = None
 
     def __post_init__(self):
         if self.tp_size is None:
             self.tp_size = self.num_gpus_per_node // self.cp_size // self.pp_size
         if self.ep_size is None:
             self.ep_size = self.num_gpus_per_node // self.pp_size
+        if self.extra_env_vars is None:
+            self.extra_env_vars = {}
 
 
 def prepare(case: CaseConfig, *, need_fp8: bool, need_int4: bool, all_bridge: bool) -> None:
@@ -190,6 +197,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"{sglang_args} "
         f"{ci_args} "
         f"{misc_args} "
+        f"{case.extra_args} "
     )
     return train_args
 
@@ -203,6 +211,7 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
             "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
             "OPEN_TRAINING_INT4_GROUP_SIZE": "128",
         }
+    extra_env_vars |= case.extra_env_vars
 
     U.execute_train(
         train_args=train_args,

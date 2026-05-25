@@ -137,6 +137,10 @@ class DSAMultiLatentAttention(Attention):
 
         self.index_topk = 2048
 
+        from miles.utils.replay_base import indexer_replay_manager
+
+        indexer_replay_manager.register_to_module(self, "indexer_replay")
+
     def forward(
         self,
         hidden_states,
@@ -202,7 +206,22 @@ class DSAMultiLatentAttention(Attention):
                 indexer_topk_scores_block = torch.softmax(indexer_topk_scores_block, dim=-1)
                 indexer_topk_scores.append(indexer_topk_scores_block)
                 topk_indices.append(topk_indices_block)
-            return torch.cat(indexer_topk_scores, dim=0), torch.cat(topk_indices, dim=0).unsqueeze(1)
+            indexer_topk_scores = torch.cat(indexer_topk_scores, dim=0)
+            topk_indices = torch.cat(topk_indices, dim=0)
+
+            from miles.utils.replay_base import indexer_replay_manager
+
+            def _original_topk(_scores, _topk, **_kwargs):
+                return topk_indices
+
+            topk_fn = indexer_replay_manager.get_topk_fn(_original_topk, return_probs=False)
+            topk_indices = topk_fn(indexer_topk_scores, self.index_topk)
+
+            from miles.utils.debug_utils import replay_audit
+
+            replay_audit.dump_current_replay_topk(kind="indexer", manager=indexer_replay_manager)
+
+            return indexer_topk_scores, topk_indices.unsqueeze(1)
 
         starts, ends = generate_varlen_mask_params(packed_seq_params.cu_seqlens_q)
         index_key = index_key.squeeze(1)

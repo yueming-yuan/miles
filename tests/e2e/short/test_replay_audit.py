@@ -6,7 +6,9 @@
 # replay indices retrieved and consumed by Megatron layers. It is model-agnostic: use the
 # REPLAY_AUDIT_* environment variables below to point it at any model.
 
+import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -60,6 +62,22 @@ def _env_int(name: str, default: int) -> int:
     return int(os.environ.get(name, str(default)))
 
 
+def _env_mapping(name: str) -> dict[str, str]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return {}
+    if raw.startswith("{"):
+        return {str(k): str(v) for k, v in json.loads(raw).items()}
+
+    result = {}
+    for item in shlex.split(raw.replace(",", " ")):
+        if "=" not in item:
+            raise ValueError(f"{name} entries must be KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        result[key] = value
+    return result
+
+
 def _model_config() -> ModelConfig:
     model_name = os.environ.get("REPLAY_AUDIT_MODEL_NAME", "Qwen3-30B-A3B")
     local_dir = os.environ.get("REPLAY_AUDIT_LOCAL_DIR", f"/root/models/{model_name}")
@@ -106,7 +124,9 @@ def prepare() -> None:
         U.convert_checkpoint(
             model_name=cfg.torch_dist_name,
             megatron_model_type=cfg.model_type,
-            num_gpus_per_node=cfg.num_gpus,
+            num_gpus_per_node=_env_int("REPLAY_AUDIT_CONVERT_NUM_GPUS", cfg.num_gpus),
+            extra_args=os.environ.get("REPLAY_AUDIT_CONVERT_EXTRA_ARGS", ""),
+            dir_dst=os.environ.get("REPLAY_AUDIT_TORCH_DIST_DIR", "/root"),
             hf_checkpoint=cfg.local_dir,
             megatron_path=_megatron_path(),
         )
@@ -139,16 +159,21 @@ def _build_train_args(*, mode: str, dump_dir: Path, kinds: list[str]) -> str:
     ep = _env_int("REPLAY_AUDIT_EP", cfg.num_gpus // pp)
     etp = _env_int("REPLAY_AUDIT_ETP", 1)
 
-    ckpt_args = f"--hf-checkpoint {cfg.local_dir} --ref-load /root/{cfg.torch_dist_name}_torch_dist "
+    torch_dist_dir = os.environ.get("REPLAY_AUDIT_TORCH_DIST_DIR", "/root")
+    ref_load = os.environ.get("REPLAY_AUDIT_REF_LOAD", f"{torch_dist_dir}/{cfg.torch_dist_name}_torch_dist")
+    ckpt_args = f"--hf-checkpoint {cfg.local_dir} --ref-load {ref_load} "
 
     rollout_args = (
         f"--prompt-data {cfg.prompt_data} "
         f"--input-key {cfg.input_key} --label-key {cfg.label_key} "
         f"{'--apply-chat-template ' if cfg.apply_chat_template else ''}"
-        "--rollout-shuffle --rm-type math "
+        f"--rollout-shuffle --rm-type {os.environ.get('REPLAY_AUDIT_RM_TYPE', 'math')} "
         f"--rollout-max-response-len {_env_int('REPLAY_AUDIT_MAX_RESPONSE_LEN', 8)} "
         f"--rollout-temperature {os.environ.get('REPLAY_AUDIT_TEMPERATURE', '0.0')} "
-        "--num-rollout 1 --rollout-batch-size 1 --n-samples-per-prompt 1 --global-batch-size 1 "
+        f"--num-rollout {_env_int('REPLAY_AUDIT_NUM_ROLLOUT', 1)} "
+        f"--rollout-batch-size {_env_int('REPLAY_AUDIT_ROLLOUT_BATCH_SIZE', 1)} "
+        f"--n-samples-per-prompt {_env_int('REPLAY_AUDIT_N_SAMPLES_PER_PROMPT', 1)} "
+        f"--global-batch-size {_env_int('REPLAY_AUDIT_GLOBAL_BATCH_SIZE', 1)} "
         "--sglang-disable-cuda-graph "
     )
 
@@ -167,14 +192,20 @@ def _build_train_args(*, mode: str, dump_dir: Path, kinds: list[str]) -> str:
     )
 
     rollout_num_gpus_per_engine = _env_int("REPLAY_AUDIT_ROLLOUT_GPUS_PER_ENGINE", min(4, cfg.num_gpus))
-    sglang_args = f"--rollout-num-gpus-per-engine {rollout_num_gpus_per_engine} --sglang-mem-fraction-static 0.6 "
+    sglang_mem_fraction = os.environ.get("REPLAY_AUDIT_SGLANG_MEM_FRACTION_STATIC", "0.6")
+    sglang_args = (
+        f"--rollout-num-gpus-per-engine {rollout_num_gpus_per_engine} "
+        f"--sglang-mem-fraction-static {sglang_mem_fraction} "
+    )
 
     dispatcher_args = "--moe-token-dispatcher-type alltoall "
     if mode == "deepep":
         dispatcher_args = "--moe-token-dispatcher-type flex --moe-enable-deepep "
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
+    elif mode == "megatron_deepep":
+        dispatcher_args = "--moe-token-dispatcher-type flex --moe-enable-deepep "
     elif mode != "alltoall":
-        raise typer.BadParameter("mode must be alltoall or deepep")
+        raise typer.BadParameter("mode must be alltoall, deepep, or megatron_deepep")
 
     dumper_filter = f"'filter={_REPLAY_FILTER}'"
     dump_fwd_bwd = _env_bool("REPLAY_AUDIT_DUMP_FWD_BWD", False)
@@ -221,6 +252,7 @@ def _execute(mode: str, dump_dir: Path) -> None:
         "MILES_REPLAY_AUDIT_ENABLE": "1",
         "MILES_REPLAY_AUDIT_KINDS": ",".join(kinds),
     }
+    extra_env_vars.update(_env_mapping("REPLAY_AUDIT_EXTRA_ENV_VARS"))
 
     U.execute_train(
         train_args=train_args,
@@ -296,7 +328,7 @@ def run_case(mode: str, *, dump_dir: Path | None = None) -> None:
 
 
 @app.command()
-def run(mode: Annotated[str, typer.Option(help="Dispatch mode: alltoall or deepep")]) -> None:
+def run(mode: Annotated[str, typer.Option(help="Dispatch mode: alltoall, deepep, or megatron_deepep")]) -> None:
     run_case(mode)
 
 

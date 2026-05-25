@@ -32,6 +32,7 @@ def dump_sglang_capture_topk(
     if not is_enabled(kind):
         return
 
+    # Keep padding rows so CP zigzag chunk boundaries remain recoverable.
     value = top_indices.detach()
 
     dumper = _get_sglang_dumper()
@@ -60,7 +61,7 @@ def dump_current_replay_topk(*, kind: str, manager, dims: str | None = None) -> 
         return
     replay.last_forward_top_indices_raw = None
 
-    value = _drop_padding_rows(top_indices.detach())
+    value = top_indices.detach()
     if value.numel() == 0:
         return
 
@@ -71,29 +72,10 @@ def dump_current_replay_topk(*, kind: str, manager, dims: str | None = None) -> 
     dumper.dump(stream_name(kind, stream_id), value, dims=dims or target_dims(kind))
 
 
-def target_dims(kind: str) -> str:
-    replicated_axes: list[str] = []
-    if _parallel_size("tp") > 1:
-        replicated_axes.append("tp:replicated")
-    if kind == "indexer" and _parallel_size("sp") > 1:
-        replicated_axes.append("sp:replicated")
-    if _parallel_size("ep") > 1:
-        replicated_axes.append("ep:replicated")
-
-    suffix = f" # {' '.join(replicated_axes)}" if replicated_axes else ""
-    if kind == "routing":
-        return f"t[cp:zigzag,sp] topk{suffix}"
-    if kind == "indexer":
-        return f"t[cp:zigzag] topk{suffix}"
-    return f"t topk{suffix}"
-
-
-def _drop_padding_rows(tensor: torch.Tensor) -> torch.Tensor:
-    if tensor.ndim == 0:
-        return tensor
-    flat = tensor.reshape(-1, tensor.shape[-1])
-    keep = ~(flat == -1).all(dim=-1)
-    return flat[keep].reshape(-1, tensor.shape[-1]).contiguous()
+def target_dims(_kind: str) -> str:
+    if _parallel_size("cp") > 1:
+        return "s[cp:zigzag] topk"
+    return "t topk"
 
 
 def _get_sglang_dumper():
@@ -102,6 +84,7 @@ def _get_sglang_dumper():
     except ImportError:
         return None
     return dumper
+
 
 def _parallel_size(axis: str) -> int:
     try:

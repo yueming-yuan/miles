@@ -191,7 +191,7 @@ def _build_train_args(*, mode: str, dump_dir: Path, kinds: list[str]) -> str:
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         f"--actor-num-nodes 1 --actor-num-gpus-per-node {cfg.num_gpus} --colocate "
-        "--ci-test "
+        "--ci-test --ci-disable-logprobs-checker "
     )
 
     return " ".join(

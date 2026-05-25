@@ -51,14 +51,14 @@ def test_dump_sglang_capture_topk_honors_kind_filter(monkeypatch):
     assert fake.calls == []
 
 
-def test_dump_current_replay_topk_filters_padding_rows(monkeypatch):
+def test_dump_current_replay_topk_preserves_padding_rows(monkeypatch):
     fake = _FakeDumper()
     monkeypatch.setenv(replay_audit.ENABLE_ENV, "1")
     monkeypatch.setattr(replay_audit, "_get_sglang_dumper", lambda: fake)
     monkeypatch.setattr(
         replay_audit,
         "_parallel_size",
-        lambda axis: {"tp": 2, "sp": 2, "ep": 4}.get(axis, 1),
+        lambda axis: {"tp": 2, "cp": 2, "sp": 2, "ep": 4}.get(axis, 1),
     )
 
     replay = SimpleNamespace(
@@ -72,8 +72,10 @@ def test_dump_current_replay_topk_filters_padding_rows(monkeypatch):
     assert len(fake.calls) == 1
     name, value, dims = fake.calls[0]
     assert name == "replay_indexer_stream_0007"
-    torch.testing.assert_close(value, torch.tensor([[4, 5], [6, 7]], dtype=torch.int32))
-    assert dims == "t[cp:zigzag] topk # tp:replicated sp:replicated ep:replicated"
+    torch.testing.assert_close(
+        value, torch.tensor([[4, 5], [-1, -1], [6, 7]], dtype=torch.int32)
+    )
+    assert dims == "s[cp:zigzag] topk"
     assert replay.last_forward_top_indices_raw is None
 
 

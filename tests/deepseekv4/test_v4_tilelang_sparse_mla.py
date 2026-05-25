@@ -348,6 +348,7 @@ def test_sparse_mla_backward(batch, seqlen, heads, dim, seqlen_kv, topk):
         if ref_g is None or tl_g is None:
             print(f"  {name}: SKIPPED (None)")
             continue
+        assert torch.isfinite(tl_g).all(), f"{name} contains NaN/Inf"
         diff = compute_diff(ref_g.float(), tl_g.float())
         print_diff(name, diff)
         # Backward has larger tolerance due to bf16 GEMM + atomic adds

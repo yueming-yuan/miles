@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import random
+import site
 import time
 from dataclasses import dataclass
 from functools import partial
@@ -94,6 +95,43 @@ class ExecuteTrainConfig:
     output_dir: str = "/root/shared_data"
 
 
+def _library_path_for_ray() -> str | None:
+    entries: list[str] = []
+
+    cuda_major: str | None = None
+    try:
+        import torch
+
+        if torch.version.cuda:
+            cuda_major = torch.version.cuda.split(".", maxsplit=1)[0]
+    except Exception:
+        cuda_major = None
+
+    try:
+        site_dirs = [Path(path) for path in site.getsitepackages()]
+    except Exception:
+        site_dirs = []
+    if site.USER_SITE:
+        site_dirs.append(Path(site.USER_SITE))
+
+    if cuda_major is not None:
+        entries.extend(
+            str(path)
+            for base in site_dirs
+            if (path := base / "nvidia" / f"cu{cuda_major}" / "lib").is_dir()
+        )
+
+    entries.extend(path for path in os.environ.get("LD_LIBRARY_PATH", "").split(":") if path)
+    entries.extend(
+        str(path)
+        for base in site_dirs
+        if (path := base / "nvidia" / "cuda_runtime" / "lib").is_dir()
+    )
+
+    result = list(dict.fromkeys(entries))
+    return ":".join(result) if result else None
+
+
 def execute_train(
     train_args: str,
     num_gpus_per_node: int,
@@ -143,6 +181,10 @@ def execute_train(
     if (f := before_ray_job_submit) is not None:
         f()
 
+    library_path_env_vars = {}
+    if library_path := _library_path_for_ray():
+        library_path_env_vars["LD_LIBRARY_PATH"] = library_path
+
     runtime_env_json = json.dumps(
         {
             "env_vars": {
@@ -170,6 +212,7 @@ def execute_train(
                     if config.cuda_core_dump
                     else {}
                 ),
+                **library_path_env_vars,
                 **extra_env_vars,
                 **_parse_extra_env_vars(config.extra_env_vars),
             }

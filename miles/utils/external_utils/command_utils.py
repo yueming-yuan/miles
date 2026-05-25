@@ -96,9 +96,13 @@ class ExecuteTrainConfig:
 
 
 def _library_path_for_ray() -> str:
-    import torch
+    try:
+        import torch
 
-    cuda_major = torch.version.cuda.split(".", maxsplit=1)[0]
+        cuda_version = torch.version.cuda
+    except Exception:
+        cuda_version = None
+
     site_dirs = [Path(p) for p in site.getsitepackages()]
     if site.USER_SITE:
         site_dirs.append(Path(site.USER_SITE))
@@ -107,7 +111,7 @@ def _library_path_for_ray() -> str:
         return [str(p) for base in site_dirs if (p := base / subpath).is_dir()]
 
     entries = (
-        _existing(f"nvidia/cu{cuda_major}/lib")
+        (_existing(f"nvidia/cu{cuda_version.split('.', maxsplit=1)[0]}/lib") if cuda_version else [])
         + [p for p in os.environ.get("LD_LIBRARY_PATH", "").split(":") if p]
         + _existing("nvidia/cuda_runtime/lib")
     )

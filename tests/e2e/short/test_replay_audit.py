@@ -7,6 +7,7 @@
 # REPLAY_AUDIT_* environment variables below to point it at any model.
 
 import os
+import site
 import subprocess
 import sys
 import tempfile
@@ -79,6 +80,40 @@ def _model_config() -> ModelConfig:
 
 def _megatron_path() -> str:
     return os.environ.get("MILES_SCRIPT_MEGATRON_PATH", "/root/Megatron-LM")
+
+
+def _library_path_for_ray() -> str | None:
+    entries: list[str] = []
+
+    cuda_major: str | None = None
+    try:
+        import torch
+
+        if torch.version.cuda:
+            cuda_major = torch.version.cuda.split(".", maxsplit=1)[0]
+    except Exception:
+        cuda_major = None
+
+    site_dirs = [Path(path) for path in site.getsitepackages()]
+    if site.USER_SITE:
+        site_dirs.append(Path(site.USER_SITE))
+
+    if cuda_major is not None:
+        entries.extend(
+            str(path)
+            for base in site_dirs
+            if (path := base / "nvidia" / f"cu{cuda_major}" / "lib").is_dir()
+        )
+
+    entries.extend(path for path in os.environ.get("LD_LIBRARY_PATH", "").split(":") if path)
+    entries.extend(
+        str(path)
+        for base in site_dirs
+        if (path := base / "nvidia" / "cuda_runtime" / "lib").is_dir()
+    )
+
+    result = list(dict.fromkeys(entries))
+    return ":".join(result) if result else None
 
 
 def _enabled_kinds() -> list[str]:
@@ -216,17 +251,20 @@ def _execute(mode: str, dump_dir: Path) -> None:
     cfg = _model_config()
     kinds = _enabled_kinds()
     train_args = _build_train_args(mode=mode, dump_dir=dump_dir, kinds=kinds)
+    extra_env_vars = {
+        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
+        "MILES_REPLAY_AUDIT_ENABLE": "1",
+        "MILES_REPLAY_AUDIT_KINDS": ",".join(kinds),
+    }
+    if library_path := _library_path_for_ray():
+        extra_env_vars["LD_LIBRARY_PATH"] = library_path
 
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=cfg.num_gpus,
         megatron_model_type=cfg.model_type,
         megatron_path=_megatron_path(),
-        extra_env_vars={
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
-            "MILES_REPLAY_AUDIT_ENABLE": "1",
-            "MILES_REPLAY_AUDIT_KINDS": ",".join(kinds),
-        },
+        extra_env_vars=extra_env_vars,
     )
 
 

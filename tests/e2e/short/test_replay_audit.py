@@ -29,7 +29,9 @@ app = typer.Typer()
 
 _RUN_DIR = Path(tempfile.mkdtemp(prefix="test_miles_replay_audit_"))
 
-_REPLAY_FILTER = 'name.startswith("replay_")'
+# Ray job submit re-runs the entrypoint through /bin/sh and does not preserve
+# argv quoting for dumper filter values, so avoid shell-special parentheses.
+_REPLAY_FILTER = 'name[:7]=="replay_"'
 _COMPARATOR_FILTER = "name=replay_"
 
 

@@ -74,8 +74,9 @@ _GLM5_4LAYER_REPLAY_AUDIT_DEFAULTS = {
         "--sglang-nsa-prefill-backend flashmla_sparse "
         "--sglang-attention-backend nsa "
         "--sglang-cuda-graph-max-bs 256 "
+        "--sglang-max-total-tokens 8192 "
         "--sglang-max-running-requests 512 "
-        "--sglang-chunked-prefill-size 16384 "
+        "--sglang-chunked-prefill-size 2048 "
         "--sglang-watchdog-timeout 3600"
     ),
 }

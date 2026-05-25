@@ -7,7 +7,6 @@
 # REPLAY_AUDIT_* environment variables below to point it at any model.
 
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -291,20 +290,9 @@ def run_case(mode: str, *, dump_dir: Path | None = None) -> None:
     dump_dir = dump_dir or _RUN_DIR / mode
     print(f"Run directory: {_RUN_DIR}")
     print(f"Replay audit dump directory: {dump_dir}")
-    shutil.rmtree(dump_dir, ignore_errors=True)
     prepare()
-    train_error = None
-    try:
-        _execute(mode=mode, dump_dir=dump_dir)
-    except subprocess.CalledProcessError as exc:
-        train_error = exc
-        print(
-            "Replay audit train command failed; verifying completed dumps before failing "
-            f"the audit case. returncode={exc.returncode}"
-        )
+    _execute(mode=mode, dump_dir=dump_dir)
     _verify(dump_dir)
-    if train_error is not None:
-        print("Replay audit comparator passed after train command failure; treating audit validation as passed.")
 
 
 @app.command()

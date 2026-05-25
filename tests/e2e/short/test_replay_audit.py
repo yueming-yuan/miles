@@ -146,6 +146,8 @@ def _build_train_args(*, mode: str, dump_dir: Path, kinds: list[str]) -> str:
     )
 
     optimizer_args = "--optimizer adam --lr 1e-6 --lr-decay-style constant --optimizer-cpu-offload --use-precision-aware-optimizer "
+    if _env_bool("REPLAY_AUDIT_TIGHT_HOST_MEMORY", True):
+        optimizer_args += "--exp-avg-dtype fp16 --exp-avg-sq-dtype fp16 --main-params-dtype fp16 "
     grpo_args = "--advantage-estimator grpo --eps-clip 0.2 "
 
     perf_args = (
@@ -213,6 +215,7 @@ def _execute(mode: str, dump_dir: Path) -> None:
         num_gpus_per_node=cfg.num_gpus,
         megatron_model_type=cfg.model_type,
         extra_env_vars={
+            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
             "MILES_REPLAY_AUDIT_ENABLE": "1",
             "MILES_REPLAY_AUDIT_KINDS": ",".join(kinds),
         },
@@ -272,13 +275,20 @@ def _verify(dump_dir: Path) -> None:
         _compare_phase(dump_dir, phase)
 
 
-@app.command()
-def run(mode: Annotated[str, typer.Option(help="Dispatch mode: alltoall or deepep")]) -> None:
-    dump_dir = _RUN_DIR / mode
+def run_case(mode: str, *, dump_dir: Path | None = None) -> None:
+    if mode == "tp":
+        mode = "alltoall"
+    dump_dir = dump_dir or _RUN_DIR / mode
     print(f"Run directory: {_RUN_DIR}")
+    print(f"Replay audit dump directory: {dump_dir}")
     prepare()
     _execute(mode=mode, dump_dir=dump_dir)
     _verify(dump_dir)
+
+
+@app.command()
+def run(mode: Annotated[str, typer.Option(help="Dispatch mode: alltoall or deepep")]) -> None:
+    run_case(mode)
 
 
 @app.command()

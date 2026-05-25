@@ -75,6 +75,10 @@ def _model_config() -> ModelConfig:
     )
 
 
+def _megatron_path() -> str:
+    return os.environ.get("MILES_SCRIPT_MEGATRON_PATH", "/root/Megatron-LM")
+
+
 def _enabled_kinds() -> list[str]:
     kinds = []
     if _env_bool("REPLAY_AUDIT_ENABLE_ROUTING", True):
@@ -102,6 +106,7 @@ def prepare() -> None:
             megatron_model_type=cfg.model_type,
             num_gpus_per_node=cfg.num_gpus,
             hf_checkpoint=cfg.local_dir,
+            megatron_path=_megatron_path(),
         )
 
 
@@ -214,6 +219,7 @@ def _execute(mode: str, dump_dir: Path) -> None:
         train_args=train_args,
         num_gpus_per_node=cfg.num_gpus,
         megatron_model_type=cfg.model_type,
+        megatron_path=_megatron_path(),
         extra_env_vars={
             "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
             "MILES_REPLAY_AUDIT_ENABLE": "1",

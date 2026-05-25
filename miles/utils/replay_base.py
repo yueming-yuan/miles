@@ -168,15 +168,10 @@ class BaseReplayManager:
         if isinstance(orig_top_indices, tuple):
             _, orig_top_indices = orig_top_indices
 
-        orig_flat = orig_top_indices.view(-1, orig_top_indices.shape[-1])  # [n_tokens, topk]
-        replay_flat = top_indices.view(-1, top_indices.shape[-1])
+        orig_flat = orig_top_indices.reshape(-1, orig_top_indices.shape[-1])  # [n_tokens, topk]
+        replay_flat = top_indices.reshape(-1, top_indices.shape[-1])
 
-        # [n_tokens, topk_orig, 1] == [n_tokens, 1, topk_replay] -> [n_tokens, topk_orig, topk_replay]
-        matches = orig_flat.unsqueeze(2) == replay_flat.unsqueeze(1)
-        # Mask out -1 (padding) matches
-        matches &= (orig_flat != -1).unsqueeze(2) & (replay_flat != -1).unsqueeze(1)
-        has_overlap = matches.any(dim=(1, 2))  # [n_tokens]
-        is_padding = (replay_flat == -1).all(dim=1)
+        has_overlap, is_padding = self._rowwise_topk_overlap(orig_flat, replay_flat)
         is_mismatch = ~has_overlap & ~is_padding
 
         mismatch_count = is_mismatch.sum().item()
@@ -199,6 +194,40 @@ class BaseReplayManager:
 
         if mismatch_count > mismatch_threshold:
             raise AssertionError(f"R3 mismatch tokens ({mismatch_count}) > threshold ({mismatch_threshold:.0f})")
+
+    def _rowwise_topk_overlap(self, orig_flat: torch.Tensor, replay_flat: torch.Tensor):
+        if orig_flat.shape[0] != replay_flat.shape[0]:
+            raise AssertionError(
+                f"replay n_tokens {replay_flat.shape[0]} does not match orig n_tokens {orig_flat.shape[0]}"
+            )
+
+        if replay_flat.shape[1] == 0:
+            has_overlap = torch.zeros(orig_flat.shape[0], device=orig_flat.device, dtype=torch.bool)
+            is_padding = torch.ones(replay_flat.shape[0], device=replay_flat.device, dtype=torch.bool)
+            return has_overlap, is_padding
+
+        chunk_rows = int(os.environ.get("MILES_REPLAY_CHECK_CHUNK_ROWS", "1024"))
+        if chunk_rows <= 0:
+            chunk_rows = orig_flat.shape[0]
+
+        overlap_chunks = []
+        padding_chunks = []
+        for start in range(0, orig_flat.shape[0], chunk_rows):
+            end = min(start + chunk_rows, orig_flat.shape[0])
+            orig_chunk = orig_flat[start:end].contiguous()
+            replay_chunk = replay_flat[start:end].contiguous()
+            if orig_chunk.dtype != replay_chunk.dtype:
+                orig_chunk = orig_chunk.to(replay_chunk.dtype)
+
+            sorted_replay = torch.sort(replay_chunk, dim=1).values.contiguous()
+            positions = torch.searchsorted(sorted_replay, orig_chunk.contiguous())
+            positions = positions.clamp(max=sorted_replay.shape[1] - 1)
+            found = sorted_replay.gather(1, positions) == orig_chunk
+
+            overlap_chunks.append((found & (orig_chunk != -1)).any(dim=1))
+            padding_chunks.append((replay_chunk == -1).all(dim=1))
+
+        return torch.cat(overlap_chunks, dim=0), torch.cat(padding_chunks, dim=0)
 
 
 class RoutingReplayManager(BaseReplayManager):

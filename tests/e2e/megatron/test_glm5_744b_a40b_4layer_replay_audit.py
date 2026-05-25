@@ -33,12 +33,8 @@ def _run() -> None:
     args = ScriptArgs(
         model_name="GLM-5_4layer",
         num_nodes=1,
+        num_rollout=2,
         enable_optimizer_offload=True,
-        # Shrink rollout work to the minimum needed to capture and compare dumps.
-        rollout_max_response_len=8,
-        num_rollout=8,
-        n_samples_per_prompt=1,
-        global_batch_size=8,
         extra_args=(
             f"{replay_extra_args} "
             "--ci-test --ci-disable-logprobs-checker "

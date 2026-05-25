@@ -82,20 +82,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_mtp: bool = False
     enable_pd: bool = True
     enable_optimizer_offload: bool = False
+    num_rollout: int = 3000
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     model_local_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     hardware: Literal["H200", "B200", "GB300"] = "H200"
-    # Optional overrides for rollout sizing. When None the values picked by
-    # `_execute_train` for the current `mode`/`num_nodes` are used.
-    rollout_max_response_len: int | None = None
-    num_rollout: int | None = None
-    rollout_batch_size: int | None = None
-    n_samples_per_prompt: int | None = None
-    global_batch_size: int | None = None
-    rollout_temperature: float | None = None
 
     def __post_init__(self):
         if self.hardware == "GB300":
@@ -231,7 +224,6 @@ def _execute_train(args: ScriptArgs):
         "--save-interval 20 "
     )
 
-    default_max_response_len = 100 if args.mode == "debug_minimal" else 32768
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
@@ -239,13 +231,12 @@ def _execute_train(args: ScriptArgs):
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        f"--num-rollout {args.num_rollout if args.num_rollout is not None else 3000} "
-        f"--rollout-batch-size {args.rollout_batch_size if args.rollout_batch_size is not None else 8} "
-        f"--n-samples-per-prompt {args.n_samples_per_prompt if args.n_samples_per_prompt is not None else 8} "
-        f"--rollout-max-response-len "
-        f"{args.rollout_max_response_len if args.rollout_max_response_len is not None else default_max_response_len} "
-        f"--rollout-temperature {args.rollout_temperature if args.rollout_temperature is not None else 1} "
-        f"--global-batch-size {args.global_batch_size if args.global_batch_size is not None else 64} "
+        f"--num-rollout {args.num_rollout} "
+        "--rollout-batch-size 8 "
+        "--n-samples-per-prompt 8 "
+        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 32768} "
+        "--rollout-temperature 1 "
+        "--global-batch-size 64 "
     )
 
     eval_args = ""

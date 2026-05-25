@@ -51,7 +51,7 @@ def test_dump_sglang_capture_topk_honors_kind_filter(monkeypatch):
     assert fake.calls == []
 
 
-def test_dump_current_replay_topk_preserves_padding_rows(monkeypatch):
+def test_dump_current_replay_topk_drops_padding_rows_without_cp_group(monkeypatch):
     fake = _FakeDumper()
     monkeypatch.setenv(replay_audit.ENABLE_ENV, "1")
     monkeypatch.setattr(replay_audit, "_get_sglang_dumper", lambda: fake)
@@ -73,10 +73,34 @@ def test_dump_current_replay_topk_preserves_padding_rows(monkeypatch):
     name, value, dims = fake.calls[0]
     assert name == "replay_indexer_stream_0007"
     torch.testing.assert_close(
-        value, torch.tensor([[4, 5], [-1, -1], [6, 7]], dtype=torch.int32)
+        value, torch.tensor([[4, 5], [6, 7]], dtype=torch.int32)
     )
-    assert dims == "s[cp:zigzag] topk"
+    assert dims == "t topk"
     assert replay.last_forward_top_indices_raw is None
+
+
+def test_normalize_replay_topk_reconstructs_cp_zigzag(monkeypatch):
+    rank0 = torch.tensor([[0], [1], [-1], [-1]], dtype=torch.int32)
+    rank1 = torch.tensor([[2], [3], [4], [5]], dtype=torch.int32)
+    monkeypatch.setattr(replay_audit, "_parallel_size", lambda axis: 2 if axis == "cp" else 1)
+    monkeypatch.setattr(replay_audit, "_parallel_rank", lambda axis: 0)
+    monkeypatch.setattr(replay_audit, "_all_gather_cp", lambda tensor: [rank0, rank1])
+
+    value = replay_audit._normalize_replay_topk_for_dump(rank0)
+
+    torch.testing.assert_close(value, torch.arange(6, dtype=torch.int32).view(6, 1))
+
+
+def test_normalize_replay_topk_only_dumps_cp_tp_zero(monkeypatch):
+    rank0 = torch.tensor([[0], [1], [-1], [-1]], dtype=torch.int32)
+    rank1 = torch.tensor([[2], [3], [4], [5]], dtype=torch.int32)
+    monkeypatch.setattr(replay_audit, "_parallel_size", lambda axis: 2 if axis == "cp" else 1)
+    monkeypatch.setattr(replay_audit, "_parallel_rank", lambda axis: 1 if axis == "cp" else 0)
+    monkeypatch.setattr(replay_audit, "_all_gather_cp", lambda tensor: [rank0, rank1])
+
+    value = replay_audit._normalize_replay_topk_for_dump(rank1)
+
+    assert value.numel() == 0
 
 
 def test_dump_current_replay_topk_requires_stream_id(monkeypatch):

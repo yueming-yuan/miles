@@ -60,6 +60,7 @@ _GLM5_4LAYER_REPLAY_AUDIT_DEFAULTS = {
     ),
     "REPLAY_AUDIT_EXTRA_TRAIN_ARGS": (
         "--allgather-cp "
+        "--use-miles-router "
         "--data-pad-size-multiplier 4096 "
         "--log-probs-chunk-size 1024 "
         "--update-weight-buffer-size 2147483648 "

@@ -8,6 +8,23 @@ from .parallel import get_parallel_state
 RegisterReplayListFunc = Callable[..., None]
 
 
+def register_replay_list_sequential(replay_list, replay_data, **_kwargs):
+    """Map replay streams to registered modules.
+
+    Each replay records `replay_data[:, replay.stream_idx]` if `stream_idx` is
+    set (used for sparse layer layouts under PP/VPP, where the global replay
+    tensor contains more streams than this rank registered). Otherwise falls
+    back to 1:1 enumeration order.
+    """
+    for replay_idx, replay in enumerate(replay_list):
+        stream_idx = replay.stream_idx if replay.stream_idx is not None else replay_idx
+        if not 0 <= stream_idx < replay_data.shape[1]:
+            raise AssertionError(
+                f"replay stream_idx {stream_idx} out of range " f"(replay_data has {replay_data.shape[1]} streams)"
+            )
+        replay.record(replay_data[:, stream_idx])
+
+
 def fill_replay_data(
     *,
     args,

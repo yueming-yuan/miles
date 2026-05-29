@@ -94,6 +94,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # precision configs
     enable_r3: bool = True
+    enable_rir: bool = False
     train_deterministic: bool = True
     fp8_training: bool = True
     enable_mis: bool = False
@@ -505,6 +506,9 @@ def _train(args: ScriptArgs):
 
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
+    if args.enable_rir:
+        misc_args += "--use-rollout-indexer-replay "
+    if args.enable_r3 or args.enable_rir:
         misc_args += "--use-miles-router "
 
     if args.train_deterministic:
